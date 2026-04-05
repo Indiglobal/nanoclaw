@@ -3,6 +3,8 @@ import {
   spawn,
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   ASSISTANT_HAS_OWN_NUMBER,
@@ -469,6 +471,27 @@ export class SignalChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Signal: typing indicator failed');
     }
+  }
+
+  async setAvatar(imagePath: string): Promise<void> {
+    // sharp is optional — installed by image-vision skill
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sharp: any;
+    try {
+      sharp = (await import('sharp')).default;
+    } catch {
+      throw new Error('sharp is required for setAvatar — install the image-vision skill');
+    }
+    const avatarPath = join(tmpdir(), 'signal-avatar.jpg');
+    await sharp(imagePath)
+      .resize(1024, 1024, { fit: 'cover' })
+      .jpeg({ quality: 90 })
+      .toFile(avatarPath);
+
+    const params: Record<string, unknown> = { avatar: avatarPath };
+    if (this.account) params.account = this.account;
+    await signalRpc(this.baseUrl, 'updateProfile', params);
+    logger.info('Signal: profile avatar updated');
   }
 
   // ---- private ----
