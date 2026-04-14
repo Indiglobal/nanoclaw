@@ -90,7 +90,9 @@ export class GmailChannel implements Channel {
       this.userEmail = profile.data.emailAddress || '';
       logger.info({ email: this.userEmail }, 'Gmail channel connected');
     } catch (err: unknown) {
-      const e = err as { response?: { status?: number; data?: { error?: string } } };
+      const e = err as {
+        response?: { status?: number; data?: { error?: string } };
+      };
       const isAuthError =
         e?.response?.data?.error === 'invalid_grant' ||
         e?.response?.status === 401 ||
@@ -104,7 +106,10 @@ export class GmailChannel implements Channel {
         this.oauth2Client = null;
         return; // Don't throw — let app continue without Gmail
       }
-      logger.error({ err }, 'Gmail connection failed with unexpected error — channel disabled');
+      logger.error(
+        { err },
+        'Gmail connection failed with unexpected error — channel disabled',
+      );
       this.gmail = null;
       this.oauth2Client = null;
       return;
@@ -112,9 +117,13 @@ export class GmailChannel implements Channel {
 
     // Start polling with error backoff
     const schedulePoll = () => {
-      const backoffMs = this.consecutiveErrors > 0
-        ? Math.min(this.pollIntervalMs * Math.pow(2, this.consecutiveErrors), 30 * 60 * 1000)
-        : this.pollIntervalMs;
+      const backoffMs =
+        this.consecutiveErrors > 0
+          ? Math.min(
+              this.pollIntervalMs * Math.pow(2, this.consecutiveErrors),
+              30 * 60 * 1000,
+            )
+          : this.pollIntervalMs;
       this.pollTimer = setTimeout(() => {
         this.pollForMessages()
           .catch((err) => logger.error({ err }, 'Gmail poll error'))
@@ -231,8 +240,18 @@ export class GmailChannel implements Channel {
       this.consecutiveErrors = 0;
     } catch (err) {
       this.consecutiveErrors++;
-      const backoffMs = Math.min(this.pollIntervalMs * Math.pow(2, this.consecutiveErrors), 30 * 60 * 1000);
-      logger.error({ err, consecutiveErrors: this.consecutiveErrors, nextPollMs: backoffMs }, 'Gmail poll failed');
+      const backoffMs = Math.min(
+        this.pollIntervalMs * Math.pow(2, this.consecutiveErrors),
+        30 * 60 * 1000,
+      );
+      logger.error(
+        {
+          err,
+          consecutiveErrors: this.consecutiveErrors,
+          nextPollMs: backoffMs,
+        },
+        'Gmail poll failed',
+      );
     }
   }
 
@@ -289,9 +308,7 @@ export class GmailChannel implements Channel {
 
     // Find the main group to deliver the email notification
     const groups = this.opts.registeredGroups();
-    const mainEntry = Object.entries(groups).find(
-      ([, g]) => g.isMain === true,
-    );
+    const mainEntry = Object.entries(groups).find(([, g]) => g.isMain === true);
 
     if (!mainEntry) {
       logger.debug(

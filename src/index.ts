@@ -9,7 +9,10 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startCredentialProxy, checkAnthropicCredentials } from './credential-proxy.js';
+import {
+  startCredentialProxy,
+  checkAnthropicCredentials,
+} from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -494,7 +497,10 @@ async function main(): Promise<void> {
       { reason: credCheck.reason, status: credCheck.status },
       'Anthropic credentials invalid — agent calls will fail until refreshed',
     );
-    degradedSubsystems.push({ name: 'anthropic-auth', reason: credCheck.reason });
+    degradedSubsystems.push({
+      name: 'anthropic-auth',
+      reason: credCheck.reason,
+    });
   } else {
     logger.info('Anthropic credentials check passed');
   }
@@ -617,7 +623,10 @@ async function main(): Promise<void> {
           { channel: channelName },
           'Channel connect() returned but channel is not connected — skipping',
         );
-        failedChannels.push({ name: channelName, error: new Error('not connected') });
+        failedChannels.push({
+          name: channelName,
+          error: new Error('not connected'),
+        });
       }
     } catch (err) {
       logger.error(
@@ -655,9 +664,14 @@ async function main(): Promise<void> {
         const msg = `⚠️ NanoClaw started with degraded subsystems:\n${lines}`;
         // Delay briefly to let WhatsApp finish initializing its outgoing path
         setTimeout(() => {
-          notifyChannel.sendMessage(mainJid, msg).catch((err) =>
-            logger.error({ err }, 'Failed to send degraded-subsystem notification'),
-          );
+          notifyChannel
+            .sendMessage(mainJid, msg)
+            .catch((err) =>
+              logger.error(
+                { err },
+                'Failed to send degraded-subsystem notification',
+              ),
+            );
         }, 5000);
       } else {
         logger.warn(

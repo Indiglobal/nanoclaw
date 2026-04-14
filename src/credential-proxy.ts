@@ -162,12 +162,17 @@ export async function checkAnthropicCredentials(): Promise<
         }),
       });
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, reason: 'ANTHROPIC_API_KEY rejected', status: res.status };
+        return {
+          ok: false,
+          reason: 'ANTHROPIC_API_KEY rejected',
+          status: res.status,
+        };
       }
       // 200 or 400 (bad request but credentials accepted) both indicate valid auth
       return { ok: true };
     } else {
-      const token = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
+      const token =
+        secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
       if (!token) {
         return { ok: false, reason: 'No CLAUDE_CODE_OAUTH_TOKEN set in .env' };
       }
@@ -191,7 +196,8 @@ export async function checkAnthropicCredentials(): Promise<
       if (res.status === 401) {
         return {
           ok: false,
-          reason: 'CLAUDE_CODE_OAUTH_TOKEN rejected — run `claude setup-token` to refresh',
+          reason:
+            'CLAUDE_CODE_OAUTH_TOKEN rejected — run `claude setup-token` to refresh',
           status: res.status,
         };
       }
