@@ -9,7 +9,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startCredentialProxy } from './credential-proxy.js';
+import { startCredentialProxy, checkAnthropicCredentials } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -483,6 +483,22 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Validate Anthropic credentials up front so a dead token surfaces as a
+  // warning + notification rather than a silent 401 on every agent call.
+  // Accumulated alongside channel-level failures; notification is sent once
+  // channels are up (so the main group channel is available to deliver it).
+  const degradedSubsystems: Array<{ name: string; reason: string }> = [];
+  const credCheck = await checkAnthropicCredentials();
+  if (!credCheck.ok) {
+    logger.warn(
+      { reason: credCheck.reason, status: credCheck.status },
+      'Anthropic credentials invalid — agent calls will fail until refreshed',
+    );
+    degradedSubsystems.push({ name: 'anthropic-auth', reason: credCheck.reason });
+  } else {
+    logger.info('Anthropic credentials check passed');
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
@@ -579,6 +595,7 @@ async function main(): Promise<void> {
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  const failedChannels: Array<{ name: string; error: unknown }> = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -589,12 +606,71 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    try {
+      await channel.connect();
+      // Only track channel as active if it reports connected; some channels (like Gmail)
+      // may self-disable on auth failure and return without throwing.
+      if (channel.isConnected()) {
+        channels.push(channel);
+      } else {
+        logger.warn(
+          { channel: channelName },
+          'Channel connect() returned but channel is not connected — skipping',
+        );
+        failedChannels.push({ name: channelName, error: new Error('not connected') });
+      }
+    } catch (err) {
+      logger.error(
+        { err, channel: channelName },
+        'Channel failed to connect — skipping',
+      );
+      failedChannels.push({ name: channelName, error: err });
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Notify the main group if any subsystems are degraded (failed channels or
+  // invalid Anthropic credentials), so the user finds out without tailing logs.
+  const degradedEntries: Array<{ name: string; reason: string }> = [
+    ...failedChannels.map((f) => ({
+      name: f.name,
+      reason: (f.error as Error)?.message || String(f.error),
+    })),
+    ...degradedSubsystems,
+  ];
+  if (degradedEntries.length > 0) {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain === true,
+    );
+    if (mainEntry) {
+      const [mainJid] = mainEntry;
+      const notifyChannel = findChannel(channels, mainJid);
+      if (notifyChannel) {
+        const lines = degradedEntries
+          .map((d) => `• ${d.name}: ${d.reason}`)
+          .join('\n');
+        const msg = `⚠️ NanoClaw started with degraded subsystems:\n${lines}`;
+        // Delay briefly to let WhatsApp finish initializing its outgoing path
+        setTimeout(() => {
+          notifyChannel.sendMessage(mainJid, msg).catch((err) =>
+            logger.error({ err }, 'Failed to send degraded-subsystem notification'),
+          );
+        }, 5000);
+      } else {
+        logger.warn(
+          { mainJid, degraded: degradedEntries.map((d) => d.name) },
+          'No channel owns main group JID — cannot send degraded-subsystem notification',
+        );
+      }
+    } else {
+      logger.warn(
+        { degraded: degradedEntries.map((d) => d.name) },
+        'No main group registered — cannot send degraded-subsystem notification',
+      );
+    }
   }
 
   // Start subsystems (independently of connection handler)

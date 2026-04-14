@@ -84,10 +84,31 @@ export class GmailChannel implements Channel {
 
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
 
-    // Verify connection
-    const profile = await this.gmail.users.getProfile({ userId: 'me' });
-    this.userEmail = profile.data.emailAddress || '';
-    logger.info({ email: this.userEmail }, 'Gmail channel connected');
+    // Verify connection — tolerate auth failures so the rest of the app can run.
+    try {
+      const profile = await this.gmail.users.getProfile({ userId: 'me' });
+      this.userEmail = profile.data.emailAddress || '';
+      logger.info({ email: this.userEmail }, 'Gmail channel connected');
+    } catch (err: unknown) {
+      const e = err as { response?: { status?: number; data?: { error?: string } } };
+      const isAuthError =
+        e?.response?.data?.error === 'invalid_grant' ||
+        e?.response?.status === 401 ||
+        e?.response?.status === 400;
+      if (isAuthError) {
+        logger.warn(
+          { err },
+          'Gmail OAuth token invalid — channel disabled. Re-authenticate with /add-gmail to restore.',
+        );
+        this.gmail = null;
+        this.oauth2Client = null;
+        return; // Don't throw — let app continue without Gmail
+      }
+      logger.error({ err }, 'Gmail connection failed with unexpected error — channel disabled');
+      this.gmail = null;
+      this.oauth2Client = null;
+      return;
+    }
 
     // Start polling with error backoff
     const schedulePoll = () => {
@@ -103,7 +124,7 @@ export class GmailChannel implements Channel {
       }, backoffMs);
     };
 
-    // Initial poll
+    // Initial poll — pollForMessages already has its own try-catch
     await this.pollForMessages();
     schedulePoll();
   }

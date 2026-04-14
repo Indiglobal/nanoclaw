@@ -123,3 +123,87 @@ export function detectAuthMode(): AuthMode {
   const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }
+
+/**
+ * Validate the configured Anthropic credentials by probing the Anthropic API.
+ * Returns `{ ok: true }` on success, or `{ ok: false, reason }` on failure.
+ *
+ * In OAuth mode this calls `/api/oauth/claude_cli/create_api_key` with the
+ * stored Bearer token — the same exchange containers do at startup.
+ * In API-key mode this sends a 1-token /v1/messages probe with the key.
+ *
+ * This runs at startup so a dead credential surfaces via a logged warning
+ * and a notification to the main group, instead of every agent invocation
+ * silently returning 401.
+ */
+export async function checkAnthropicCredentials(): Promise<
+  { ok: true } | { ok: false; reason: string; status?: number }
+> {
+  const secrets = readEnvFile([
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_AUTH_TOKEN',
+  ]);
+  const mode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+
+  try {
+    if (mode === 'api-key') {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': secrets.ANTHROPIC_API_KEY!,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, reason: 'ANTHROPIC_API_KEY rejected', status: res.status };
+      }
+      // 200 or 400 (bad request but credentials accepted) both indicate valid auth
+      return { ok: true };
+    } else {
+      const token = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
+      if (!token) {
+        return { ok: false, reason: 'No CLAUDE_CODE_OAUTH_TOKEN set in .env' };
+      }
+      // Probe /v1/messages with Bearer auth — the same path the container CLI
+      // actually uses. `create_api_key` requires a different OAuth scope
+      // (`org:create_api_key`) and would give false negatives.
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'oauth-2025-04-20',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      if (res.status === 401) {
+        return {
+          ok: false,
+          reason: 'CLAUDE_CODE_OAUTH_TOKEN rejected — run `claude setup-token` to refresh',
+          status: res.status,
+        };
+      }
+      // 200 (success) or 400 (bad request but creds accepted) both indicate the token works.
+      // 403 would indicate a scope issue, but the probe uses the same path the
+      // container does, so anything non-401 here means containers will also work.
+      return { ok: true };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Credential check failed: ${(err as Error).message}`,
+    };
+  }
+}
