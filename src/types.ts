@@ -95,6 +95,8 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: set the channel's profile avatar image.
+  setAvatar?(hostFilePath: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

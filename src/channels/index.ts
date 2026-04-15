@@ -6,6 +6,9 @@
 // gmail
 import './gmail.js';
 
+// signal
+import './signal.js';
+
 // slack
 
 // telegram
