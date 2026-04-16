@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -198,6 +199,17 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: false,
   });
+
+  // Google Tasks credentials directory (for Google Tasks MCP inside the container)
+  const homeDir = os.homedir();
+  const googleTasksDir = path.join(homeDir, '.google-tasks-mcp');
+  if (fs.existsSync(googleTasksDir)) {
+    mounts.push({
+      hostPath: googleTasksDir,
+      containerPath: '/home/node/.google-tasks-mcp',
+      readonly: false, // MCP needs to refresh OAuth tokens
+    });
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
