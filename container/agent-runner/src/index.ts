@@ -470,6 +470,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
+        'mcp__google_tasks__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -488,6 +489,10 @@ async function runQuery(
         gmail: {
           command: 'npx',
           args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+        },
+        google_tasks: {
+          command: 'node',
+          args: [path.join(__dirname, 'google-tasks-mcp-stdio.js')],
         },
       },
       hooks: {
