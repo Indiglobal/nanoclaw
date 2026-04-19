@@ -62,12 +62,32 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type SDKImageMediaType =
+  | 'image/jpeg'
+  | 'image/png'
+  | 'image/gif'
+  | 'image/webp';
+
 type SDKContentBlock =
   | { type: 'text'; text: string }
   | {
       type: 'image';
-      source: { type: 'base64'; media_type: string; data: string };
+      source: { type: 'base64'; media_type: SDKImageMediaType; data: string };
     };
+
+function toSdkImageMediaType(mime: string): SDKImageMediaType | null {
+  const m = mime.toLowerCase();
+  if (
+    m === 'image/jpeg' ||
+    m === 'image/png' ||
+    m === 'image/gif' ||
+    m === 'image/webp'
+  ) {
+    return m;
+  }
+  if (m === 'image/jpg') return 'image/jpeg';
+  return null;
+}
 
 interface SDKUserMessage {
   type: 'user';
@@ -102,9 +122,11 @@ class MessageStream {
   pushMultimodal(text: string, images: InboundImage[]): void {
     const blocks: SDKContentBlock[] = [];
     for (const img of images) {
+      const mediaType = toSdkImageMediaType(img.mime);
+      if (!mediaType) continue;
       blocks.push({
         type: 'image',
-        source: { type: 'base64', media_type: img.mime, data: img.base64 },
+        source: { type: 'base64', media_type: mediaType, data: img.base64 },
       });
     }
     if (text) blocks.push({ type: 'text', text });
