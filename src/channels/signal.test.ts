@@ -1031,7 +1031,7 @@ describe('SignalChannel', () => {
     const groupsDir = testPaths.groupsDir;
     let fsMod: typeof import('node:fs');
     let pathMod: typeof import('node:path');
-    let sharp: typeof import('sharp').default;
+    let sharp: typeof import('sharp');
 
     beforeEach(async () => {
       fsMod = await import('node:fs');
