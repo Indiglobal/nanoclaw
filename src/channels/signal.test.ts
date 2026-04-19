@@ -4,10 +4,20 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 vi.mock('./registry.js', () => ({ registerChannel: vi.fn() }));
 vi.mock('../env.js', () => ({ readEnvFile: vi.fn(() => ({})) }));
+const testPaths = vi.hoisted(() => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  const os = require('node:os') as typeof import('node:os');
+  return {
+    groupsDir: fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-groups-')),
+  };
+});
+
 vi.mock('../config.js', () => ({
   ASSISTANT_NAME: 'Andy',
   ASSISTANT_HAS_OWN_NUMBER: true,
   TRIGGER_PATTERN: /^@Andy\b/i,
+  GROUPS_DIR: testPaths.groupsDir,
 }));
 vi.mock('../logger.js', () => ({
   logger: {
@@ -495,7 +505,11 @@ describe('SignalChannel', () => {
   // --- Attachment-only messages ---
 
   describe('attachment-only messages', () => {
-    it('skips messages with attachments but no text', async () => {
+    it('delivers attachment-only messages (image pipeline may add images separately)', async () => {
+      // With attachment processing wired in, attachment-only messages are no
+      // longer dropped — they reach the agent with images[] populated when the
+      // file is present on disk. Here the file isn't staged, so onMessage is
+      // still called but with no images.
       const testOpts = createTestOpts();
       const channel = new SignalChannel(
         'signal-cli',
@@ -519,7 +533,11 @@ describe('SignalChannel', () => {
       });
 
       await new Promise((r) => setTimeout(r, 50));
-      expect(testOpts.onMessage).not.toHaveBeenCalled();
+      expect(testOpts.onMessage).toHaveBeenCalledTimes(1);
+      const msg = (testOpts.onMessage as unknown as ReturnType<typeof vi.fn>)
+        .mock.calls[0][1];
+      expect(msg.content).toBe('');
+      expect(msg.images).toBeUndefined();
 
       await channel.disconnect();
     });
@@ -1001,6 +1019,305 @@ describe('SignalChannel', () => {
           return new Response('Not Found', { status: 404 });
         },
       );
+
+      await channel.disconnect();
+    });
+  });
+
+  // --- Image attachment handling ---
+
+  describe('image attachments', () => {
+    let attachmentsDir: string;
+    const groupsDir = testPaths.groupsDir;
+    let fsMod: typeof import('node:fs');
+    let pathMod: typeof import('node:path');
+    let sharp: typeof import('sharp').default;
+
+    beforeEach(async () => {
+      fsMod = await import('node:fs');
+      pathMod = await import('node:path');
+      sharp = (await import('sharp')).default;
+
+      attachmentsDir = fsMod.mkdtempSync(
+        pathMod.join(
+          (await import('node:os')).tmpdir(),
+          'nanoclaw-signal-att-',
+        ),
+      );
+      process.env.SIGNAL_ATTACHMENTS_DIR = attachmentsDir;
+      // Clean groupsDir between tests so file-count assertions are deterministic
+      for (const entry of fsMod.readdirSync(groupsDir)) {
+        fsMod.rmSync(pathMod.join(groupsDir, entry), {
+          recursive: true,
+          force: true,
+        });
+      }
+    });
+
+    afterEach(() => {
+      delete process.env.SIGNAL_ATTACHMENTS_DIR;
+      fsMod.rmSync(attachmentsDir, { recursive: true, force: true });
+    });
+
+    async function writeTestImage(id: string): Promise<Buffer> {
+      const bytes = await sharp({
+        create: {
+          width: 120,
+          height: 80,
+          channels: 3,
+          background: { r: 10, g: 200, b: 50 },
+        },
+      })
+        .jpeg()
+        .toBuffer();
+      fsMod.writeFileSync(pathMod.join(attachmentsDir, `${id}.jpg`), bytes);
+      return bytes;
+    }
+
+    it('attaches image data and saves copy to group workspace', async () => {
+      await writeTestImage('attA');
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'signal:+15555550123': {
+            name: 'Test DM',
+            folder: 'test-dm',
+            trigger: '@Andy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000000,
+          message: 'Check this out',
+          attachments: [
+            { id: 'attA', contentType: 'image/jpeg', filename: 'photo.jpg' },
+          ],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      const onMessage = opts.onMessage as unknown as ReturnType<typeof vi.fn>;
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      const msg = onMessage.mock.calls[0][1] as {
+        content: string;
+        images?: Array<{ filename: string; mime: string; base64: string }>;
+      };
+      expect(msg.content).toBe('Check this out');
+      expect(msg.images).toHaveLength(1);
+      expect(msg.images![0].mime).toBe('image/jpeg');
+      expect(msg.images![0].base64.length).toBeGreaterThan(0);
+      expect(msg.images![0].filename).toMatch(/^signal-1700000000000-/);
+
+      const savedFiles = fsMod.readdirSync(
+        pathMod.join(groupsDir, 'test-dm', 'attachments'),
+      );
+      expect(savedFiles).toHaveLength(1);
+      expect(savedFiles[0]).toMatch(/^signal-1700000000000-.*\.jpg$/);
+
+      await channel.disconnect();
+    });
+
+    it('delivers image-only message (no text body)', async () => {
+      await writeTestImage('attB');
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'signal:+15555550123': {
+            name: 'Test DM',
+            folder: 'test-dm',
+            trigger: '@Andy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000001,
+          // No message field — attachment-only
+          attachments: [
+            { id: 'attB', contentType: 'image/jpeg', filename: 'p.jpg' },
+          ],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      const onMessage = opts.onMessage as unknown as ReturnType<typeof vi.fn>;
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      const msg = onMessage.mock.calls[0][1] as {
+        content: string;
+        images?: unknown[];
+      };
+      expect(msg.content).toBe('');
+      expect(msg.images).toHaveLength(1);
+
+      await channel.disconnect();
+    });
+
+    it('ignores non-image attachments', async () => {
+      fsMod.writeFileSync(
+        pathMod.join(attachmentsDir, 'docA'),
+        Buffer.from('%PDF-1.4 dummy'),
+      );
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'signal:+15555550123': {
+            name: 'Test DM',
+            folder: 'test-dm',
+            trigger: '@Andy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000002,
+          message: 'here is a doc',
+          attachments: [
+            { id: 'docA', contentType: 'application/pdf', filename: 'x.pdf' },
+          ],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const onMessage = opts.onMessage as unknown as ReturnType<typeof vi.fn>;
+      const msg = onMessage.mock.calls[0][1] as { images?: unknown[] };
+      expect(msg.images).toBeUndefined();
+
+      await channel.disconnect();
+    });
+
+    it('degrades gracefully when attachment file is missing', async () => {
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'signal:+15555550123': {
+            name: 'Test DM',
+            folder: 'test-dm',
+            trigger: '@Andy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000003,
+          message: 'broken',
+          attachments: [
+            {
+              id: 'missing-attachment-id',
+              contentType: 'image/jpeg',
+              filename: 'x.jpg',
+            },
+          ],
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const onMessage = opts.onMessage as unknown as ReturnType<typeof vi.fn>;
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      const msg = onMessage.mock.calls[0][1] as {
+        content: string;
+        images?: unknown[];
+      };
+      // Text still delivered; images omitted rather than dropping the whole message
+      expect(msg.content).toBe('broken');
+      expect(msg.images).toBeUndefined();
+
+      await channel.disconnect();
+    });
+
+    it('caps image count at MAX_IMAGES_PER_MESSAGE (5)', async () => {
+      for (let i = 0; i < 8; i++) await writeTestImage(`multi${i}`);
+      const opts = createTestOpts({
+        registeredGroups: vi.fn(() => ({
+          'signal:+15555550123': {
+            name: 'Test DM',
+            folder: 'test-dm',
+            trigger: '@Andy',
+            added_at: '2024-01-01T00:00:00.000Z',
+          },
+        })),
+      });
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000004,
+          message: 'many',
+          attachments: Array.from({ length: 8 }, (_, i) => ({
+            id: `multi${i}`,
+            contentType: 'image/jpeg',
+            filename: `p${i}.jpg`,
+          })),
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      const onMessage = opts.onMessage as unknown as ReturnType<typeof vi.fn>;
+      const msg = onMessage.mock.calls[0][1] as { images?: unknown[] };
+      expect(msg.images).toHaveLength(5);
 
       await channel.disconnect();
     });

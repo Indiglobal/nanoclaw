@@ -42,6 +42,12 @@ export interface RegisteredGroup {
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
+export interface InboundImage {
+  filename: string; // Stable filename under groups/{folder}/attachments/
+  mime: string; // e.g. "image/jpeg", "image/png"
+  base64: string; // Resized, base64-encoded bytes ready for multimodal content blocks
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;
@@ -55,6 +61,7 @@ export interface NewMessage {
   reply_to_message_id?: string;
   reply_to_message_content?: string;
   reply_to_sender_name?: string;
+  images?: InboundImage[];
 }
 
 export interface ScheduledTask {

@@ -26,8 +26,15 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+interface InboundImage {
+  filename: string;
+  mime: string;
+  base64: string;
+}
+
 interface ContainerInput {
   prompt: string;
+  images?: InboundImage[];
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
@@ -55,9 +62,16 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type SDKContentBlock =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image';
+      source: { type: 'base64'; media_type: string; data: string };
+    };
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | SDKContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -79,6 +93,24 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushMultimodal(text: string, images: InboundImage[]): void {
+    const blocks: SDKContentBlock[] = [];
+    for (const img of images) {
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mime, data: img.base64 },
+      });
+    }
+    if (text) blocks.push({ type: 'text', text });
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content: blocks },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -380,13 +412,19 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  images?: InboundImage[],
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
   closedDuringQuery: boolean;
 }> {
   const stream = new MessageStream();
-  stream.push(prompt);
+  if (images && images.length > 0) {
+    log(`Initial turn includes ${images.length} image(s)`);
+    stream.pushMultimodal(prompt, images);
+  } else {
+    stream.push(prompt);
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -685,8 +723,10 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
-  // Query loop: run query → wait for IPC message → run new query → repeat
+  // Query loop: run query → wait for IPC message → run new query → repeat.
+  // Images only attach to the initial turn; subsequent IPC messages are text.
   let resumeAt: string | undefined;
+  let initialImages: InboundImage[] | undefined = containerInput.images;
   try {
     while (true) {
       log(
@@ -700,7 +740,9 @@ async function main(): Promise<void> {
         containerInput,
         sdkEnv,
         resumeAt,
+        initialImages,
       );
+      initialImages = undefined;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

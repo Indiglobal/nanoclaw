@@ -252,6 +252,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+  const batchImages = missedMessages.flatMap((m) => m.images ?? []);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -261,7 +262,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      imageCount: batchImages.length,
+    },
     'Processing messages',
   );
 
@@ -283,7 +288,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, batchImages, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -340,6 +345,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  images: Array<{ filename: string; mime: string; base64: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -387,6 +393,7 @@ async function runAgent(
       group,
       {
         prompt,
+        images: images.length > 0 ? images : undefined,
         sessionId,
         groupFolder: group.folder,
         chatJid,
