@@ -104,6 +104,13 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: set the channel's profile avatar image.
   setAvatar?(hostFilePath: string): Promise<void>;
+  // Optional: send one or more file attachments in a single message. Channels
+  // without native attachment support should omit this.
+  sendAttachments?(
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

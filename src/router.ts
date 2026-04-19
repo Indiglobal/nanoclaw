@@ -55,6 +55,27 @@ export function routeOutbound(
   return channel.sendMessage(jid, text);
 }
 
+export class ChannelUnsupportedError extends Error {
+  constructor(channelName: string, feature: string) {
+    super(`Channel ${channelName} does not support ${feature}`);
+    this.name = 'ChannelUnsupportedError';
+  }
+}
+
+export function routeOutboundAttachments(
+  channels: Channel[],
+  jid: string,
+  hostFilePaths: string[],
+  caption?: string,
+): Promise<void> {
+  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
+  if (!channel) throw new Error(`No channel for JID: ${jid}`);
+  if (!channel.sendAttachments) {
+    throw new ChannelUnsupportedError(channel.name, 'attachments');
+  }
+  return channel.sendAttachments(jid, hostFilePaths, caption);
+}
+
 export function findChannel(
   channels: Channel[],
   jid: string,

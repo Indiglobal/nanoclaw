@@ -53,6 +53,8 @@ beforeEach(() => {
 
   deps = {
     sendMessage: async () => {},
+    sendAttachments: async () => {},
+    injectSystemNotice: () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;

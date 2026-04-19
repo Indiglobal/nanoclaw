@@ -1323,6 +1323,77 @@ describe('SignalChannel', () => {
     });
   });
 
+  // --- Outbound attachments ---
+
+  describe('sendAttachments', () => {
+    it('calls send RPC with attachments array for DM', async () => {
+      const channel = createChannel();
+      await channel.connect();
+      mockFetch.mockClear();
+
+      await channel.sendAttachments(
+        'signal:+15555550123',
+        ['/host/path/a.jpg', '/host/path/b.png'],
+        'look at these',
+      );
+
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
+      );
+      expect(rpcCall).toBeDefined();
+      const body = JSON.parse(rpcCall![1]?.body as string);
+      expect(body.method).toBe('send');
+      expect(body.params.recipient).toEqual(['+15555550123']);
+      expect(body.params.attachments).toEqual([
+        '/host/path/a.jpg',
+        '/host/path/b.png',
+      ]);
+      expect(body.params.message).toBe('look at these');
+
+      await channel.disconnect();
+    });
+
+    it('uses groupId param for group JIDs', async () => {
+      const channel = createChannel();
+      await channel.connect();
+      mockFetch.mockClear();
+
+      await channel.sendAttachments(
+        'signal:group:abc123',
+        ['/host/path/a.jpg'],
+      );
+
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
+      );
+      const body = JSON.parse(rpcCall![1]?.body as string);
+      expect(body.params.groupId).toBe('abc123');
+      expect(body.params.recipient).toBeUndefined();
+      expect(body.params.attachments).toEqual(['/host/path/a.jpg']);
+      // Caption is optional — omitted here
+      expect(body.params.message).toBeUndefined();
+
+      await channel.disconnect();
+    });
+
+    it('throws when not connected', async () => {
+      const channel = createChannel();
+      // not connected
+      await expect(
+        channel.sendAttachments('signal:+15555550123', ['/x']),
+      ).rejects.toThrow(/not connected/);
+    });
+
+    it('throws on empty file list', async () => {
+      const channel = createChannel();
+      await channel.connect();
+      await expect(
+        channel.sendAttachments('signal:+15555550123', []),
+      ).rejects.toThrow(/at least one file/);
+      await channel.disconnect();
+    });
+  });
+
   // --- Channel properties ---
 
   describe('channel properties', () => {

@@ -555,6 +555,43 @@ export class SignalChannel implements Channel {
     logger.info({ jid, length: text.length }, 'Signal message sent');
   }
 
+  async sendAttachments(
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ): Promise<void> {
+    if (!this.connected) {
+      throw new Error('Signal: not connected');
+    }
+    if (hostFilePaths.length === 0) {
+      throw new Error('Signal: sendAttachments requires at least one file');
+    }
+    const target = jid.replace(/^signal:/, '');
+    if (!target) {
+      throw new Error(`Signal: empty target for jid ${jid}`);
+    }
+
+    const params: Record<string, unknown> = {
+      attachments: hostFilePaths,
+    };
+    if (caption) {
+      params.message = caption;
+      this.echoCache.remember(caption);
+    }
+    if (this.account) params.account = this.account;
+    if (target.startsWith('group:')) {
+      params.groupId = target.slice('group:'.length);
+    } else {
+      params.recipient = [target];
+    }
+
+    await signalRpc(this.baseUrl, 'send', params);
+    logger.info(
+      { jid, fileCount: hostFilePaths.length, captionLength: caption?.length ?? 0 },
+      'Signal attachments sent',
+    );
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

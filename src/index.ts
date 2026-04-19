@@ -49,7 +49,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  formatMessages,
+  formatOutbound,
+  routeOutboundAttachments,
+} from './router.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -811,6 +816,27 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendAttachments: (jid, paths, caption) =>
+      routeOutboundAttachments(channels, jid, paths, caption),
+    injectSystemNotice: (groupFolder, payload) => {
+      // Find the jid backing this folder so we can route into the right queue.
+      const entry = Object.entries(registeredGroups).find(
+        ([, g]) => g.folder === groupFolder,
+      );
+      if (!entry) {
+        logger.warn(
+          { groupFolder },
+          'No chat JID for folder; dropping system notice',
+        );
+        return;
+      }
+      const [jid] = entry;
+      // sendMessage may return false if no active container — in that case the
+      // notice is intentionally dropped. Design trade-off: we don't buffer
+      // across container lifecycles to avoid stale failure notices appearing
+      // long after the user's expectations have moved on.
+      queue.sendMessage(jid, payload);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

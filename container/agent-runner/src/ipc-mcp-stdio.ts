@@ -14,6 +14,93 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const REQUESTS_DIR = path.join(IPC_DIR, 'requests');
+
+const CONTAINER_GROUP_PREFIX = '/workspace/group/';
+// Must match src/attachment-safety.ts on the host
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+interface SendFileValidation {
+  ok: true;
+  size: number;
+}
+interface SendFileError {
+  ok: false;
+  reason: string;
+  detail: string;
+}
+
+function validateSendPath(
+  input: string,
+): SendFileValidation | SendFileError {
+  if (typeof input !== 'string' || input.length === 0) {
+    return { ok: false, reason: 'path_escape', detail: 'Path is empty' };
+  }
+  if (!input.startsWith(CONTAINER_GROUP_PREFIX)) {
+    return {
+      ok: false,
+      reason: 'path_escape',
+      detail: `Path must begin with ${CONTAINER_GROUP_PREFIX}`,
+    };
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(input);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return { ok: false, reason: 'not_found', detail: `File not found: ${input}` };
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      return {
+        ok: false,
+        reason: 'not_readable',
+        detail: `File not readable: ${input}`,
+      };
+    }
+    return {
+      ok: false,
+      reason: 'internal_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (!stat.isFile()) {
+    return {
+      ok: false,
+      reason: 'not_regular_file',
+      detail: `Not a regular file: ${input}`,
+    };
+  }
+  if (stat.size > MAX_ATTACHMENT_BYTES) {
+    return {
+      ok: false,
+      reason: 'too_large',
+      detail: `File is ${stat.size} bytes; limit is ${MAX_ATTACHMENT_BYTES}`,
+    };
+  }
+  return { ok: true, size: stat.size };
+}
+
+function queueAttachmentRequest(input: {
+  chatJid: string;
+  filePaths: string[];
+  caption?: string;
+}): string {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  fs.mkdirSync(REQUESTS_DIR, { recursive: true });
+  const payload = {
+    type: 'send_attachments',
+    requestId,
+    chatJid: input.chatJid,
+    filePaths: input.filePaths,
+    caption: input.caption,
+  };
+  const filepath = path.join(REQUESTS_DIR, `${requestId}.json`);
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload));
+  fs.renameSync(tempPath, filepath);
+  return requestId;
+}
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -497,6 +584,158 @@ Use available_groups.json to find the JID for a group. The folder name must be c
         {
           type: 'text' as const,
           text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'send_file',
+  `Send a single file (photo, video, document) to the current chat or a different registered chat. The file must be inside /workspace/group/ — typically under /workspace/group/attachments/ or /workspace/group/outbox/.
+
+Validation is synchronous: the tool returns immediately with {status:"error", reason:"..."} if the path is outside the group folder, missing, unreadable, not a regular file, or larger than 100MB.
+
+On validation pass the tool returns {status:"queued", request_id:"..."} and the host attempts delivery asynchronously. If delivery fails afterward (channel disconnected, signal-cli error, etc.), the host posts a <system-notice type="send_failed" ...> into your next user turn — acknowledge the failure to the user with a correction. If no notice arrives, assume the send succeeded.`,
+  {
+    path: z
+      .string()
+      .describe(
+        'Absolute path under /workspace/group/ (e.g. /workspace/group/outbox/photo.jpg)',
+      ),
+    caption: z
+      .string()
+      .optional()
+      .describe('Optional caption shown below the file on Signal/WhatsApp'),
+    chatJid: z
+      .string()
+      .optional()
+      .describe(
+        '(Main group only) Target chat JID. Defaults to the current chat.',
+      ),
+  },
+  async (args) => {
+    const target = args.chatJid || chatJid;
+    if (!isMain && args.chatJid && args.chatJid !== chatJid) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: 'unauthorized',
+              detail: 'Only the main group may send files to other chats',
+            }),
+          },
+        ],
+      };
+    }
+    const check = validateSendPath(args.path);
+    if (!check.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: check.reason,
+              detail: check.detail,
+            }),
+          },
+        ],
+      };
+    }
+    const requestId = queueAttachmentRequest({
+      chatJid: target,
+      filePaths: [args.path],
+      caption: args.caption,
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            status: 'queued',
+            request_id: requestId,
+            file_count: 1,
+          }),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'send_files',
+  `Send multiple files in a single message with an optional shared caption. All files are validated up front; if any path fails validation the entire batch is rejected and the invalid paths are reported in invalid_paths. Same async failure-callback semantics as send_file.`,
+  {
+    paths: z
+      .array(z.string())
+      .min(1)
+      .describe('Array of absolute paths under /workspace/group/'),
+    caption: z
+      .string()
+      .optional()
+      .describe('Optional caption shown below the batch'),
+    chatJid: z
+      .string()
+      .optional()
+      .describe(
+        '(Main group only) Target chat JID. Defaults to the current chat.',
+      ),
+  },
+  async (args) => {
+    const target = args.chatJid || chatJid;
+    if (!isMain && args.chatJid && args.chatJid !== chatJid) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: 'unauthorized',
+              detail: 'Only the main group may send files to other chats',
+            }),
+          },
+        ],
+      };
+    }
+    const invalidPaths: Array<{ path: string; reason: string; detail: string }> =
+      [];
+    for (const p of args.paths) {
+      const check = validateSendPath(p);
+      if (!check.ok) {
+        invalidPaths.push({ path: p, reason: check.reason, detail: check.detail });
+      }
+    }
+    if (invalidPaths.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: 'invalid_paths',
+              invalid_paths: invalidPaths,
+            }),
+          },
+        ],
+      };
+    }
+    const requestId = queueAttachmentRequest({
+      chatJid: target,
+      filePaths: args.paths,
+      caption: args.caption,
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            status: 'queued',
+            request_id: requestId,
+            file_count: args.paths.length,
+          }),
         },
       ],
     };
