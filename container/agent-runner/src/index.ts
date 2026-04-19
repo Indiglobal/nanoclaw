@@ -24,6 +24,8 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -638,7 +640,6 @@ async function main(): Promise<void> {
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
   };
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;

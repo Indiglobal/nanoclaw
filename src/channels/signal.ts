@@ -478,9 +478,12 @@ export class SignalChannel implements Channel {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sharp: any;
     try {
+      // @ts-expect-error — optional peer, provided by image-vision skill
       sharp = (await import('sharp')).default;
     } catch {
-      throw new Error('sharp is required for setAvatar — install the image-vision skill');
+      throw new Error(
+        'sharp is required for setAvatar — install the image-vision skill',
+      );
     }
     const avatarPath = join(tmpdir(), 'signal-avatar.jpg');
     await sharp(imagePath)
@@ -608,9 +611,7 @@ export class SignalChannel implements Channel {
           const q = syncSent.quote;
           msg.reply_to_sender_name = q.authorNumber ?? 'someone';
           msg.reply_to_message_content = q.text || undefined;
-          msg.reply_to_message_id = q.id
-            ? String(q.id)
-            : undefined;
+          msg.reply_to_message_id = q.id ? String(q.id) : undefined;
         }
         this.opts.onMessage(chatJid, msg);
         return;

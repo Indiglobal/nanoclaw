@@ -848,10 +848,7 @@ describe('SignalChannel', () => {
       await channel.connect();
       mockFetch.mockClear();
 
-      await channel.sendMessage(
-        'signal:+15555550123',
-        '**Bold** and _italic_',
-      );
+      await channel.sendMessage('signal:+15555550123', '**Bold** and _italic_');
 
       const rpcCall = mockFetch.mock.calls.find((c) =>
         (c[0] as string).includes('/api/v1/rpc'),
@@ -870,10 +867,7 @@ describe('SignalChannel', () => {
       await channel.connect();
       mockFetch.mockClear();
 
-      await channel.sendMessage(
-        'signal:+15555550123',
-        'The answer is ||42||',
-      );
+      await channel.sendMessage('signal:+15555550123', 'The answer is ||42||');
 
       const rpcCall = mockFetch.mock.calls.find((c) =>
         (c[0] as string).includes('/api/v1/rpc'),
