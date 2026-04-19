@@ -34,6 +34,15 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+## Incoming image attachments
+
+When a user sends an image (e.g. a photo via Signal or WhatsApp), you receive it two ways:
+
+1. As a multimodal content block in the current turn — you can see it directly.
+2. As a saved file under `/workspace/group/attachments/`. The accompanying message XML includes an `<attached_images>` tag listing the filenames.
+
+If a later turn refers to an image you saw earlier (and its base64 is no longer in the current context), re-read the file from `/workspace/group/attachments/` by filename instead of asking the user to resend.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
