@@ -115,6 +115,11 @@ A personal Claude assistant accessible via messaging, with minimal custom code.
 - Each group gets a dedicated folder under `groups/`
 - Groups can have additional directories mounted via `containerConfig`
 
+### Attachment Handling
+- **Inbound media** is resized once (sharp, 1568px longest side), saved as the original under `groups/{folder}/attachments/`, persisted in SQLite (`messages.images`), and delivered to the agent as multimodal content blocks on the initial turn. Live-pipe IPC carries the base64 into already-running containers so catch-up batches don't lose images.
+- **Outbound media** uses `mcp__nanoclaw__send_file` / `send_files`. Validation is synchronous (path under `/workspace/group/`, stat, size cap) and errors return immediately. Delivery is fire-and-forget; failures surface later as a `<system-notice type="send_failed" ...>` injected into the container's next user turn rather than blocking the agent on a response file.
+- Channels opt in by implementing the optional `Channel.sendAttachments`. Signal is the first; other channels get a clear "unsupported" error until they add it.
+
 ### Main Channel Privileges
 - Main channel is the admin/control group (typically self-chat)
 - Can write to global memory (`groups/CLAUDE.md`)
