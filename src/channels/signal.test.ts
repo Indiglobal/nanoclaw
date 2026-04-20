@@ -1358,10 +1358,9 @@ describe('SignalChannel', () => {
       await channel.connect();
       mockFetch.mockClear();
 
-      await channel.sendAttachments(
-        'signal:group:abc123',
-        ['/host/path/a.jpg'],
-      );
+      await channel.sendAttachments('signal:group:abc123', [
+        '/host/path/a.jpg',
+      ]);
 
       const rpcCall = mockFetch.mock.calls.find((c) =>
         (c[0] as string).includes('/api/v1/rpc'),

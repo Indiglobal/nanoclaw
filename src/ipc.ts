@@ -361,9 +361,10 @@ export async function processAttachmentRequest(
       'Attachment send succeeded',
     );
   } catch (err) {
-    const reason = (err as { name?: string }).name === 'ChannelUnsupportedError'
-      ? 'channel_unsupported'
-      : 'rpc_failed';
+    const reason =
+      (err as { name?: string }).name === 'ChannelUnsupportedError'
+        ? 'channel_unsupported'
+        : 'rpc_failed';
     const detail = err instanceof Error ? err.message : String(err);
     logger.warn(
       { sourceGroup, chatJid, requestId, reason, detail },

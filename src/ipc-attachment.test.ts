@@ -92,9 +92,9 @@ describe('processAttachmentRequest', () => {
     );
 
     expect(deps.sendAttachments).toHaveBeenCalledTimes(1);
-    const [jid, paths, caption] = (deps.sendAttachments as ReturnType<
-      typeof vi.fn
-    >).mock.calls[0];
+    const [jid, paths, caption] = (
+      deps.sendAttachments as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
     expect(jid).toBe('signal:+15555550123');
     expect(paths).toHaveLength(1);
     expect(paths[0].endsWith('/outbox/photo.jpg')).toBe(true);
@@ -123,9 +123,9 @@ describe('processAttachmentRequest', () => {
 
     expect(deps.sendAttachments).not.toHaveBeenCalled();
     expect(deps.injectSystemNotice).toHaveBeenCalledTimes(1);
-    const [folder, payload] = (deps.injectSystemNotice as ReturnType<
-      typeof vi.fn
-    >).mock.calls[0];
+    const [folder, payload] = (
+      deps.injectSystemNotice as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
     expect(folder).toBe('main');
     expect(payload).toContain('system-notice');
     expect(payload).toContain('reason="not_found"');

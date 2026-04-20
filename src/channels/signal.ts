@@ -587,7 +587,11 @@ export class SignalChannel implements Channel {
 
     await signalRpc(this.baseUrl, 'send', params);
     logger.info(
-      { jid, fileCount: hostFilePaths.length, captionLength: caption?.length ?? 0 },
+      {
+        jid,
+        fileCount: hostFilePaths.length,
+        captionLength: caption?.length ?? 0,
+      },
       'Signal attachments sent',
     );
   }

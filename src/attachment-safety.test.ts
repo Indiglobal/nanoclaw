@@ -79,10 +79,7 @@ describe('validateAttachment', () => {
     // ..: /workspace/group/../project/foo.jpg would be fine as a container path
     // string, but normalize makes it escape the group root.
     expect(() =>
-      validateAttachment(
-        `${CONTAINER_GROUP_PREFIX}../outside.jpg`,
-        folder,
-      ),
+      validateAttachment(`${CONTAINER_GROUP_PREFIX}../outside.jpg`, folder),
     ).toThrow(AttachmentValidationError);
   });
 
