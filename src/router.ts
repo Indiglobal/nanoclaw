@@ -23,7 +23,11 @@ export function formatMessages(
       m.reply_to_message_content && m.reply_to_sender_name
         ? `\n  <quoted_message from="${escapeXml(m.reply_to_sender_name)}">${escapeXml(m.reply_to_message_content)}</quoted_message>`
         : '';
-    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}"${replyAttr}>${replySnippet}${escapeXml(m.content)}</message>`;
+    const imagesSnippet =
+      m.images && m.images.length > 0
+        ? `\n  <attached_images>${m.images.map((img) => escapeXml(img.filename)).join(', ')}</attached_images>`
+        : '';
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}"${replyAttr}>${replySnippet}${imagesSnippet}${escapeXml(m.content)}</message>`;
   });
 
   const header = `<context timezone="${escapeXml(timezone)}" />\n`;
@@ -49,6 +53,27 @@ export function routeOutbound(
   const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
   if (!channel) throw new Error(`No channel for JID: ${jid}`);
   return channel.sendMessage(jid, text);
+}
+
+export class ChannelUnsupportedError extends Error {
+  constructor(channelName: string, feature: string) {
+    super(`Channel ${channelName} does not support ${feature}`);
+    this.name = 'ChannelUnsupportedError';
+  }
+}
+
+export function routeOutboundAttachments(
+  channels: Channel[],
+  jid: string,
+  hostFilePaths: string[],
+  caption?: string,
+): Promise<void> {
+  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
+  if (!channel) throw new Error(`No channel for JID: ${jid}`);
+  if (!channel.sendAttachments) {
+    throw new ChannelUnsupportedError(channel.name, 'attachments');
+  }
+  return channel.sendAttachments(jid, hostFilePaths, caption);
 }
 
 export function findChannel(

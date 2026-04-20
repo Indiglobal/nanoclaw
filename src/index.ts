@@ -49,7 +49,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  formatMessages,
+  formatOutbound,
+  routeOutboundAttachments,
+} from './router.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -252,6 +257,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+  const batchImages = missedMessages.flatMap((m) => m.images ?? []);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -261,7 +267,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      imageCount: batchImages.length,
+    },
     'Processing messages',
   );
 
@@ -283,32 +293,38 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    batchImages,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -340,6 +356,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  images: Array<{ filename: string; mime: string; base64: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -387,6 +404,7 @@ async function runAgent(
       group,
       {
         prompt,
+        images: images.length > 0 ? images : undefined,
         sessionId,
         groupFolder: group.folder,
         chatJid,
@@ -513,10 +531,21 @@ async function startMessageLoop(): Promise<void> {
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
+          const pipedImages = messagesToSend.flatMap((m) => m.images ?? []);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+          if (
+            queue.sendMessage(
+              chatJid,
+              formatted,
+              pipedImages.length > 0 ? pipedImages : undefined,
+            )
+          ) {
             logger.debug(
-              { chatJid, count: messagesToSend.length },
+              {
+                chatJid,
+                count: messagesToSend.length,
+                imageCount: pipedImages.length,
+              },
               'Piped messages to active container',
             );
             lastAgentTimestamp[chatJid] =
@@ -787,6 +816,27 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendAttachments: (jid, paths, caption) =>
+      routeOutboundAttachments(channels, jid, paths, caption),
+    injectSystemNotice: (groupFolder, payload) => {
+      // Find the jid backing this folder so we can route into the right queue.
+      const entry = Object.entries(registeredGroups).find(
+        ([, g]) => g.folder === groupFolder,
+      );
+      if (!entry) {
+        logger.warn(
+          { groupFolder },
+          'No chat JID for folder; dropping system notice',
+        );
+        return;
+      }
+      const [jid] = entry;
+      // sendMessage may return false if no active container — in that case the
+      // notice is intentionally dropped. Design trade-off: we don't buffer
+      // across container lifecycles to avoid stale failure notices appearing
+      // long after the user's expectations have moved on.
+      queue.sendMessage(jid, payload);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

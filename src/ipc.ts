@@ -3,6 +3,10 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
+import {
+  AttachmentValidationError,
+  validateAttachment,
+} from './attachment-safety.js';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
@@ -12,6 +16,17 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendAttachments: (
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ) => Promise<void>;
+  /**
+   * Inject a synthetic system notice into a running group's container via the
+   * live-pipe IPC input/ directory. Used to deliver async failure callbacks
+   * back to the agent after send_file has already returned.
+   */
+  injectSystemNotice: (groupFolder: string, payload: string) => void;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -145,6 +160,52 @@ export function startIpcWatcher(deps: IpcDeps): void {
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
+
+      // Process async attachment-send requests from this group's IPC directory.
+      // Unlike tasks, these MAY generate an async failure callback routed back
+      // to the agent via the live-pipe input/ directory.
+      const requestsDir = path.join(ipcBaseDir, sourceGroup, 'requests');
+      try {
+        if (fs.existsSync(requestsDir)) {
+          const requestFiles = fs
+            .readdirSync(requestsDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of requestFiles) {
+            const filePath = path.join(requestsDir, file);
+            let data: IpcAttachmentRequest | null = null;
+            try {
+              data = JSON.parse(
+                fs.readFileSync(filePath, 'utf-8'),
+              ) as IpcAttachmentRequest;
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Unparseable attachment request, quarantining',
+              );
+              const errorDir = path.join(ipcBaseDir, 'errors');
+              fs.mkdirSync(errorDir, { recursive: true });
+              fs.renameSync(
+                filePath,
+                path.join(errorDir, `${sourceGroup}-${file}`),
+              );
+              continue;
+            }
+            // Always unlink the request; the response is an async callback via
+            // injectSystemNotice, not a filesystem reply.
+            try {
+              fs.unlinkSync(filePath);
+            } catch {
+              /* already gone */
+            }
+            await processAttachmentRequest(data, sourceGroup, isMain, deps);
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error reading IPC requests directory',
+        );
+      }
     }
 
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
@@ -152,6 +213,173 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
   processIpcFiles();
   logger.info('IPC watcher started (per-group namespaces)');
+}
+
+export interface IpcAttachmentRequest {
+  type: string; // 'send_attachments'
+  requestId?: string;
+  chatJid?: string;
+  filePaths?: string[];
+  caption?: string;
+}
+
+function escapeXmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Build the synthetic system-notice payload that the agent sees on its message
+ * stream when an async attachment send fails. Formatted as an XML tag the agent
+ * is taught to recognize via CLAUDE.md.
+ */
+export function buildSendFailureNotice(input: {
+  requestId?: string;
+  reason: string;
+  detail: string;
+  files?: string[];
+}): string {
+  const reqAttr = input.requestId
+    ? ` request_id="${escapeXmlAttr(input.requestId)}"`
+    : '';
+  const filesAttr =
+    input.files && input.files.length > 0
+      ? ` files="${escapeXmlAttr(input.files.join(','))}"`
+      : '';
+  return `<system-notice type="send_failed" reason="${escapeXmlAttr(input.reason)}"${reqAttr}${filesAttr}>\n${escapeXmlAttr(input.detail)}\n</system-notice>`;
+}
+
+export async function processAttachmentRequest(
+  data: IpcAttachmentRequest,
+  sourceGroup: string,
+  isMain: boolean,
+  deps: IpcDeps,
+): Promise<void> {
+  const { requestId } = data;
+  if (data.type !== 'send_attachments') {
+    logger.warn(
+      { sourceGroup, type: data.type, requestId },
+      'Unknown attachment request type',
+    );
+    return;
+  }
+
+  const chatJid = data.chatJid;
+  const filePaths = Array.isArray(data.filePaths) ? data.filePaths : [];
+  const caption = typeof data.caption === 'string' ? data.caption : undefined;
+
+  if (!chatJid || filePaths.length === 0) {
+    logger.warn(
+      { sourceGroup, requestId },
+      'Attachment request missing chatJid or filePaths',
+    );
+    deps.injectSystemNotice(
+      sourceGroup,
+      buildSendFailureNotice({
+        requestId,
+        reason: 'invalid_request',
+        detail: 'send_attachments requires a chatJid and at least one file',
+      }),
+    );
+    return;
+  }
+
+  // Authorization: non-main groups may only send to their own chat JID.
+  const registeredGroups = deps.registeredGroups();
+  const targetGroup = registeredGroups[chatJid];
+  const authorized =
+    isMain || (targetGroup && targetGroup.folder === sourceGroup);
+  if (!authorized) {
+    logger.warn(
+      { sourceGroup, chatJid, requestId },
+      'Unauthorized attachment send attempt',
+    );
+    deps.injectSystemNotice(
+      sourceGroup,
+      buildSendFailureNotice({
+        requestId,
+        reason: 'unauthorized',
+        detail: `Group ${sourceGroup} may not send attachments to ${chatJid}`,
+      }),
+    );
+    return;
+  }
+
+  // Validate each path. Fail the whole batch on any path error so we never
+  // half-send.
+  const hostPaths: string[] = [];
+  for (const containerPath of filePaths) {
+    try {
+      const validated = validateAttachment(containerPath, sourceGroup);
+      hostPaths.push(validated.hostPath);
+    } catch (err) {
+      if (err instanceof AttachmentValidationError) {
+        logger.warn(
+          {
+            sourceGroup,
+            requestId,
+            containerPath,
+            reason: err.reason,
+          },
+          'Attachment validation failed',
+        );
+        deps.injectSystemNotice(
+          sourceGroup,
+          buildSendFailureNotice({
+            requestId,
+            reason: err.reason,
+            detail: err.message,
+            files: [containerPath],
+          }),
+        );
+      } else {
+        logger.error(
+          { sourceGroup, requestId, err },
+          'Unexpected error validating attachment',
+        );
+        deps.injectSystemNotice(
+          sourceGroup,
+          buildSendFailureNotice({
+            requestId,
+            reason: 'internal_error',
+            detail: err instanceof Error ? err.message : String(err),
+            files: [containerPath],
+          }),
+        );
+      }
+      return;
+    }
+  }
+
+  try {
+    await deps.sendAttachments(chatJid, hostPaths, caption);
+    logger.info(
+      { sourceGroup, chatJid, requestId, fileCount: hostPaths.length },
+      'Attachment send succeeded',
+    );
+  } catch (err) {
+    const reason =
+      (err as { name?: string }).name === 'ChannelUnsupportedError'
+        ? 'channel_unsupported'
+        : 'rpc_failed';
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { sourceGroup, chatJid, requestId, reason, detail },
+      'Attachment send failed',
+    );
+    deps.injectSystemNotice(
+      sourceGroup,
+      buildSendFailureNotice({
+        requestId,
+        reason,
+        detail,
+        files: filePaths,
+      }),
+    );
+  }
 }
 
 export async function processTaskIpc(

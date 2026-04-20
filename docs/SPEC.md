@@ -170,6 +170,14 @@ interface Channel {
   disconnect(): Promise<void>;
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   syncGroups?(force: boolean): Promise<void>;
+  setAvatar?(hostFilePath: string): Promise<void>;
+  // Optional outbound attachment support. Channels without native file
+  // delivery omit this; the router surfaces ChannelUnsupportedError.
+  sendAttachments?(
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ): Promise<void>;
 }
 ```
 
@@ -512,6 +520,34 @@ Sessions enable conversation continuity - Claude remembers what you talked about
 10. Router updates last agent timestamp and saves session ID
 ```
 
+### Attachment Flow
+
+**Inbound images** (Signal today; other channels as they add support) travel as:
+
+1. Channel downloads the file (signal-cli writes to `~/.local/share/signal-cli/attachments/`).
+2. Channel code resizes via `src/image.ts` (sharp, max 1568px longest side), copies the original under `groups/{folder}/attachments/`, and attaches base64 + filename to the `NewMessage`.
+3. SQLite `messages.images` persists a JSON-serialized `InboundImage[]` so images survive DB round-trips.
+4. On container spawn, `ContainerInput.images` carries base64 to the agent-runner, which emits them as multimodal content blocks on the initial turn; the formatted message XML includes an `<attached_images>` tag so subsequent turns can re-read files from `/workspace/group/attachments/` by name.
+
+**Outbound attachments** use a separate async request/callback IPC pattern:
+
+```
+agent → mcp__nanoclaw__{send_file,send_files}
+      → sync validation (path under /workspace/group/, stat, size cap)
+      → /workspace/ipc/{group}/requests/{id}.json (atomic temp+rename)
+      ↓
+host IPC watcher (src/ipc.ts)
+      → validateAttachment (prefix + realpath + size)  [src/attachment-safety.ts]
+      → routeOutboundAttachments → Channel.sendAttachments
+      ↓
+success → nothing sent back (happy path is zero-overhead)
+failure → buildSendFailureNotice() → queue.sendMessage injects
+          "<system-notice type='send_failed' reason='...' ...>" into
+          the container's live-pipe input stream as a synthetic user turn
+```
+
+Validation errors (bad path, too large, unsupported MIME) arrive **synchronously** as the tool's return value. Delivery errors (channel disconnected, RPC failure) arrive **asynchronously** via the system-notice callback. CLAUDE.md teaches the agent to treat `<system-notice>` as a status update from the host, not a user message.
+
 ### Trigger Word Matching
 
 Messages must start with the trigger pattern (default: `@Andy`):
@@ -630,7 +666,9 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `pause_task` | Pause a task |
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
-| `send_message` | Send a message to the group via its channel |
+| `send_message` | Send a text message to the group via its channel |
+| `send_file` | Send a single file (photo/video/document) to the current chat or a different registered chat (main-only for cross-chat) |
+| `send_files` | Batch variant: multiple files with one shared caption, delivered as a single message |
 
 ---
 

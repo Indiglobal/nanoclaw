@@ -136,6 +136,24 @@ npx tsx setup/index.ts --step register -- \
 
 **Note:** signal-cli v0.14.x identifies senders by UUID instead of phone number. The first time someone messages the assistant, their JID appears in the logs as `signal:<uuid>`. Use that UUID when registering the chat.
 
+## Image & File Attachments
+
+Signal is the first channel with full two-way attachment support.
+
+**Receiving images** — when someone sends you a photo, NanoClaw:
+- reads the file signal-cli downloaded to `~/.local/share/signal-cli/attachments/`
+- resizes a copy with sharp (max 1568px longest side) and delivers it as a multimodal content block the agent can see directly on the next turn
+- saves the original under `groups/{folder}/attachments/` with a timestamped filename (e.g. `signal-1776621233825-m7EiEkTGN7fm.jpg`) so the agent can re-read it from later turns
+- caps at 5 images per message; non-image attachments are ignored
+
+Set `SIGNAL_ATTACHMENTS_DIR` in `.env` to override the default download directory.
+
+**Sending images/files** — the agent has two MCP tools:
+- `mcp__nanoclaw__send_file` — single file with optional caption
+- `mcp__nanoclaw__send_files` — batch with a shared caption, delivered as one Signal message
+
+Files must live under `/workspace/group/` inside the container (i.e. anywhere in the group folder on the host). A common convention is `/workspace/group/outbox/`. Validation is synchronous — bad paths, files over 100MB, or missing files return an error immediately. Delivery is async; if signal-cli later fails, the host posts a `<system-notice type="send_failed" reason="...">` into the agent's next turn and the agent corrects itself to the user. No config needed — signal-cli runs as the NanoClaw user and reads the paths directly, no base64 round-trip.
+
 ## Running as a Service User
 
 If NanoClaw runs as a dedicated user (e.g., `nanoclaw`) and you want the agent to access another user's files via bind mounts:

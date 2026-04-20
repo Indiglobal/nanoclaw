@@ -156,8 +156,15 @@ export class GroupQueue {
   /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
+   *
+   * Optional `images` are forwarded so multimodal content survives the pipe
+   * path (not just the initial container spawn).
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(
+    groupJid: string,
+    text: string,
+    images?: Array<{ filename: string; mime: string; base64: string }>,
+  ): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
@@ -169,7 +176,12 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      const payload: { type: string; text: string; images?: typeof images } = {
+        type: 'message',
+        text,
+      };
+      if (images && images.length > 0) payload.images = images;
+      fs.writeFileSync(tempPath, JSON.stringify(payload));
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {

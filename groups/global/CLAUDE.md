@@ -38,6 +38,21 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+### Incoming image attachments
+
+When a user sends an image (e.g. a photo via Signal or WhatsApp), you receive it two ways:
+
+1. As a multimodal content block in the current turn — you can see it directly.
+2. As a saved file under `/workspace/group/attachments/`. The accompanying message XML includes an `<attached_images>` tag listing the filenames.
+
+If a later turn refers to an image you saw earlier (and its base64 is no longer in the current context), re-read the file from `/workspace/group/attachments/` by filename instead of asking the user to resend.
+
+### Sending files back to the user
+
+Use `mcp__nanoclaw__send_file` (single file) or `mcp__nanoclaw__send_files` (batch) to deliver photos or documents. Files must live under `/workspace/group/`.
+
+The tool returns `{"status":"queued", "request_id":"..."}` on success and `{"status":"error", ...}` on sync validation failure. If delivery later fails asynchronously, the host injects a `<system-notice type="send_failed" ...>` into your next user turn — this is a status update from the host, not a user message. Acknowledge the failure to the user with a correction; do not reply to the notice itself.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.

@@ -3,23 +3,41 @@ import {
   spawn,
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import fs from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
+  GROUPS_DIR,
   TRIGGER_PATTERN,
 } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { isSupportedImageMime, processImage } from '../image.js';
 import { logger } from '../logger.js';
 import { registerChannel, type ChannelOpts } from './registry.js';
 import type {
   Channel,
+  InboundImage,
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+// signal-cli downloads received attachments here by default. Overridable for
+// tests or non-standard installs. Read lazily so tests can mutate env between
+// cases.
+function signalAttachmentsDir(): string {
+  return (
+    process.env.SIGNAL_ATTACHMENTS_DIR ||
+    join(homedir(), '.local', 'share', 'signal-cli', 'attachments')
+  );
+}
+
+// Cap on images forwarded per message. Signal allows many; Claude's multimodal
+// input works best with a small number per turn.
+const MAX_IMAGES_PER_MESSAGE = 5;
 
 // ---------------------------------------------------------------------------
 // Signal CLI daemon management
@@ -280,6 +298,105 @@ interface SignalEnvelope {
 }
 
 // ---------------------------------------------------------------------------
+// Attachment handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the on-disk file for a signal-cli attachment id. signal-cli writes
+ * attachments as either `{id}` or `{id}.{ext}` depending on version.
+ */
+function resolveAttachmentFile(id: string): string | null {
+  const dir = signalAttachmentsDir();
+  const direct = join(dir, id);
+  if (fs.existsSync(direct)) return direct;
+  // Fallback: scan for a file prefixed with the id (signal-cli sometimes appends ext)
+  try {
+    const entries = fs.readdirSync(dir);
+    const hit = entries.find((e) => e === id || e.startsWith(`${id}.`));
+    return hit ? join(dir, hit) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick image attachments from a Signal data message, read them from signal-cli's
+ * attachment dir, resize+base64-encode, and save originals under
+ * groups/{folder}/attachments/. Returns one InboundImage per successfully
+ * processed attachment; silently drops any that fail to process so the text
+ * portion still reaches the agent.
+ */
+export async function processSignalImageAttachments(
+  dataMessage: SignalDataMessage,
+  groupFolder: string,
+  messageId: string,
+): Promise<InboundImage[]> {
+  const atts = dataMessage.attachments ?? [];
+  if (atts.length === 0) return [];
+
+  const imageAtts = atts
+    .filter((a) => isSupportedImageMime(a.contentType))
+    .slice(0, MAX_IMAGES_PER_MESSAGE);
+  if (imageAtts.length === 0) return [];
+
+  const groupAttachmentsDir = join(GROUPS_DIR, groupFolder, 'attachments');
+  fs.mkdirSync(groupAttachmentsDir, { recursive: true });
+
+  const out: InboundImage[] = [];
+  for (const att of imageAtts) {
+    if (!att.id || !att.contentType) continue;
+    const src = resolveAttachmentFile(att.id);
+    if (!src) {
+      logger.warn(
+        { id: att.id },
+        'Signal: attachment file not found, skipping',
+      );
+      continue;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(src);
+    } catch (err) {
+      logger.warn({ err, src }, 'Signal: failed to read attachment');
+      continue;
+    }
+
+    // Derive a stable, timestamp-prefixed filename so files sort chronologically
+    // in the group workspace.
+    const extFromSrc = src.includes('.') ? src.slice(src.lastIndexOf('.')) : '';
+    const shortId = att.id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12);
+    const savedName = `signal-${messageId}-${shortId}${extFromSrc || '.bin'}`;
+    const destPath = join(groupAttachmentsDir, savedName);
+    try {
+      fs.copyFileSync(src, destPath);
+    } catch (err) {
+      logger.warn({ err, destPath }, 'Signal: failed to save attachment');
+      // Continue — we can still base64-encode even without the saved copy.
+    }
+
+    try {
+      const processed = await processImage(bytes, att.contentType);
+      out.push({
+        filename: savedName,
+        mime: processed.mime,
+        base64: processed.base64,
+      });
+      logger.info(
+        { filename: savedName, mime: processed.mime },
+        'Signal: processed image attachment',
+      );
+    } catch (err) {
+      logger.warn(
+        { err, id: att.id, mime: att.contentType },
+        'Signal: failed to process image',
+      );
+    }
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // SignalChannel
 // ---------------------------------------------------------------------------
 
@@ -438,6 +555,47 @@ export class SignalChannel implements Channel {
     logger.info({ jid, length: text.length }, 'Signal message sent');
   }
 
+  async sendAttachments(
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ): Promise<void> {
+    if (!this.connected) {
+      throw new Error('Signal: not connected');
+    }
+    if (hostFilePaths.length === 0) {
+      throw new Error('Signal: sendAttachments requires at least one file');
+    }
+    const target = jid.replace(/^signal:/, '');
+    if (!target) {
+      throw new Error(`Signal: empty target for jid ${jid}`);
+    }
+
+    const params: Record<string, unknown> = {
+      attachments: hostFilePaths,
+    };
+    if (caption) {
+      params.message = caption;
+      this.echoCache.remember(caption);
+    }
+    if (this.account) params.account = this.account;
+    if (target.startsWith('group:')) {
+      params.groupId = target.slice('group:'.length);
+    } else {
+      params.recipient = [target];
+    }
+
+    await signalRpc(this.baseUrl, 'send', params);
+    logger.info(
+      {
+        jid,
+        fileCount: hostFilePaths.length,
+        captionLength: caption?.length ?? 0,
+      },
+      'Signal attachments sent',
+    );
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
@@ -474,17 +632,7 @@ export class SignalChannel implements Channel {
   }
 
   async setAvatar(imagePath: string): Promise<void> {
-    // sharp is optional — installed by image-vision skill
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let sharp: any;
-    try {
-      // @ts-expect-error — optional peer, provided by image-vision skill
-      sharp = (await import('sharp')).default;
-    } catch {
-      throw new Error(
-        'sharp is required for setAvatar — install the image-vision skill',
-      );
-    }
+    const sharp = (await import('sharp')).default;
     const avatarPath = join(tmpdir(), 'signal-avatar.jpg');
     await sharp(imagePath)
       .resize(1024, 1024, { fit: 'cover' })
@@ -579,8 +727,9 @@ export class SignalChannel implements Channel {
       // "Note to Self" — destination is our own account number
       if (dest === this.account) {
         const text = (syncSent.message ?? '').trim();
-        if (!text) return;
-        if (this.echoCache.isEcho(text)) return;
+        const hasAttachments = (syncSent.attachments ?? []).length > 0;
+        if (!text && !hasAttachments) return;
+        if (text && this.echoCache.isEcho(text)) return;
         const chatJid = `${JID_PREFIX}${this.account}`;
         const timestamp = syncSent.timestamp
           ? new Date(syncSent.timestamp).toISOString()
@@ -598,8 +747,15 @@ export class SignalChannel implements Channel {
           return;
         }
 
+        const msgId = String(syncSent.timestamp ?? Date.now());
+        const images = await processSignalImageAttachments(
+          syncSent,
+          group.folder,
+          msgId,
+        );
+
         const msg: import('../types.js').NewMessage = {
-          id: String(syncSent.timestamp ?? Date.now()),
+          id: msgId,
           chat_jid: chatJid,
           sender: this.account,
           sender_name: 'Me',
@@ -613,6 +769,7 @@ export class SignalChannel implements Channel {
           msg.reply_to_message_content = q.text || undefined;
           msg.reply_to_message_id = q.id ? String(q.id) : undefined;
         }
+        if (images.length > 0) msg.images = images;
         this.opts.onMessage(chatJid, msg);
         return;
       }
@@ -624,7 +781,8 @@ export class SignalChannel implements Channel {
     if (!dataMessage) return;
 
     const text = (dataMessage.message ?? '').trim();
-    if (!text) return;
+    const hasAttachments = (dataMessage.attachments ?? []).length > 0;
+    if (!text && !hasAttachments) return;
 
     // Determine sender
     const sender = (envelope.sourceNumber ?? envelope.source ?? '').trim();
@@ -676,8 +834,15 @@ export class SignalChannel implements Channel {
       }
     }
 
+    const msgId = String(dataMessage.timestamp ?? Date.now());
+    const images = await processSignalImageAttachments(
+      dataMessage,
+      group.folder,
+      msgId,
+    );
+
     const msg: import('../types.js').NewMessage = {
-      id: String(dataMessage.timestamp ?? Date.now()),
+      id: msgId,
       chat_jid: chatJid,
       sender,
       sender_name: senderName,
@@ -691,9 +856,13 @@ export class SignalChannel implements Channel {
       msg.reply_to_message_content = q.text || undefined;
       msg.reply_to_message_id = q.id ? String(q.id) : undefined;
     }
+    if (images.length > 0) msg.images = images;
     this.opts.onMessage(chatJid, msg);
 
-    logger.info({ chatJid, sender: senderName }, 'Signal message stored');
+    logger.info(
+      { chatJid, sender: senderName, imageCount: images.length },
+      'Signal message stored',
+    );
   }
 }
 

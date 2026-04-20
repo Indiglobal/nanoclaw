@@ -42,6 +42,12 @@ export interface RegisteredGroup {
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
+export interface InboundImage {
+  filename: string; // Stable filename under groups/{folder}/attachments/
+  mime: string; // e.g. "image/jpeg", "image/png"
+  base64: string; // Resized, base64-encoded bytes ready for multimodal content blocks
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;
@@ -55,6 +61,7 @@ export interface NewMessage {
   reply_to_message_id?: string;
   reply_to_message_content?: string;
   reply_to_sender_name?: string;
+  images?: InboundImage[];
 }
 
 export interface ScheduledTask {
@@ -97,6 +104,13 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: set the channel's profile avatar image.
   setAvatar?(hostFilePath: string): Promise<void>;
+  // Optional: send one or more file attachments in a single message. Channels
+  // without native attachment support should omit this.
+  sendAttachments?(
+    jid: string,
+    hostFilePaths: string[],
+    caption?: string,
+  ): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

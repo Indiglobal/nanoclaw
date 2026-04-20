@@ -34,6 +34,40 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+## Incoming image attachments
+
+When a user sends an image (e.g. a photo via Signal or WhatsApp), you receive it two ways:
+
+1. As a multimodal content block in the current turn — you can see it directly.
+2. As a saved file under `/workspace/group/attachments/`. The accompanying message XML includes an `<attached_images>` tag listing the filenames.
+
+If a later turn refers to an image you saw earlier (and its base64 is no longer in the current context), re-read the file from `/workspace/group/attachments/` by filename instead of asking the user to resend.
+
+## Sending files back to the user
+
+Use `mcp__nanoclaw__send_file` (single file) or `mcp__nanoclaw__send_files` (batch with shared caption) to deliver photos, documents, or other files. Files must live under `/workspace/group/` — a common staging location is `/workspace/group/outbox/`.
+
+The tool validates the path synchronously and returns one of:
+
+- `{"status":"queued","request_id":"..."}` — path is fine, delivery is in flight. Proceed as if it succeeded.
+- `{"status":"error","reason":"...","detail":"..."}` — reject up front (bad path, too large, etc.). Fix and retry.
+
+If the upload **later** fails (channel disconnected, RPC error), the host injects a `<system-notice type="send_failed" reason="..." ...>` into your next user turn. That notice is **not** from the user — acknowledge the failure to the user with a correction, don't reply to the notice itself. If no notice arrives, assume the send succeeded.
+
+Channel limits: Signal accepts up to ~100 MB per file. If you need to send something larger, resize / split first.
+
+## Signal Image Attachments
+
+Whenever a Signal message arrives with an image attachment, immediately rename the file from its default name to a descriptive format:
+
+```
+signal-YYYY-MM-DD-short-description.jpg
+```
+
+For example: `signal-2026-04-19-chip-in-snow.jpg`
+
+Use the date the message was received and a short 2-4 word description of the image content. This makes attachments easy to find later.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
