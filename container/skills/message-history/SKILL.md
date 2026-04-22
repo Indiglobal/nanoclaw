@@ -8,12 +8,12 @@ allowed-tools: Bash(node:*)
 
 ## Availability
 
-This skill only works in the main channel — the store mount and skill files are not present in other groups' containers. If `node ~/.claude/skills/message-history/search.js list` fails with "Database not found", observer daemons have not been linked yet; ask the user to run `npm run link-signal-observer` on the host.
+This skill only works in the main channel — the store mount and skill files are not present in other groups' containers. If `node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list` fails with "Database not found", observer daemons have not been linked yet; ask the user to run `npm run link-signal-observer` on the host.
 
 ## Invocation
 
 ```bash
-node ~/.claude/skills/message-history/search.js <subcommand> [flags]
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js <subcommand> [flags]
 ```
 
 ## Subcommands
@@ -21,9 +21,9 @@ node ~/.claude/skills/message-history/search.js <subcommand> [flags]
 ### `search` — full-content LIKE match across all chats
 
 ```bash
-node ~/.claude/skills/message-history/search.js search --query "dentist"
-node ~/.claude/skills/message-history/search.js search --query "deploy" --channel signal --since 2026-04-01
-node ~/.claude/skills/message-history/search.js search --query "rsvp" --chat "+15551234567"
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js search --query "dentist"
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js search --query "deploy" --channel signal --since 2026-04-01
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js search --query "rsvp" --chat "+15551234567"
 ```
 
 Flags: `--query <text>` (required), `--chat <jid>`, `--channel signal|whatsapp`, `--since ISO`, `--until ISO`, `--limit N` (default 50, max 200).
@@ -31,8 +31,8 @@ Flags: `--query <text>` (required), `--chat <jid>`, `--channel signal|whatsapp`,
 ### `show` — chronological page of one chat
 
 ```bash
-node ~/.claude/skills/message-history/search.js show --chat "+15551234567"
-node ~/.claude/skills/message-history/search.js show --chat "group-jid@g.us" --after 2026-04-15 --limit 200
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js show --chat "+15551234567"
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js show --chat "group-jid@g.us" --after 2026-04-15 --limit 200
 ```
 
 Flags: `--chat <jid>` (required), `--before ISO`, `--after ISO`, `--limit N` (default 100, max 500).
@@ -40,9 +40,9 @@ Flags: `--chat <jid>` (required), `--before ISO`, `--after ISO`, `--limit N` (de
 ### `list` — directory of observed chats with previews
 
 ```bash
-node ~/.claude/skills/message-history/search.js list
-node ~/.claude/skills/message-history/search.js list --channel whatsapp --groups-only
-node ~/.claude/skills/message-history/search.js list --dms-only --limit 20
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list --channel whatsapp --groups-only
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list --dms-only --limit 20
 ```
 
 Flags: `--channel signal|whatsapp`, `--groups-only` or `--dms-only`, `--limit N` (default 50, max 500).
@@ -74,12 +74,12 @@ Each row is one line, readable as-is — no parsing required. Format:
 
 ```bash
 # What did Mom say yesterday?
-node ~/.claude/skills/message-history/search.js list --dms-only --limit 10
-node ~/.claude/skills/message-history/search.js show --chat "+1MOMS_NUMBER" --after 2026-04-21
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list --dms-only --limit 10
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js show --chat "+1MOMS_NUMBER" --after 2026-04-21
 
 # Find everywhere the word "invoice" appeared on Signal this month
-node ~/.claude/skills/message-history/search.js search --query invoice --channel signal --since 2026-04-01
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js search --query invoice --channel signal --since 2026-04-01
 
 # Scan recent group chatter
-node ~/.claude/skills/message-history/search.js list --groups-only
+node --no-warnings=ExperimentalWarning ~/.claude/skills/message-history/search.js list --groups-only
 ```
