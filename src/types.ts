@@ -126,3 +126,21 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+// Message captured by a user-linked observer instance. Feeds the all_messages
+// audit table. Distinct from NewMessage because it's not gated on registration
+// and carries channel/chat_name so a single table can span protocols.
+export interface ObservedMessage {
+  id: string;
+  chat_jid: string;
+  sender: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: boolean;
+  channel: 'signal' | 'whatsapp';
+  is_group: boolean;
+  chat_name?: string;
+}
+
+export type OnObservedMessage = (msg: ObservedMessage) => void;

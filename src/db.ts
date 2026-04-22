@@ -7,6 +7,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  ObservedMessage,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
@@ -82,6 +83,23 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS all_messages (
+      id TEXT,
+      chat_jid TEXT,
+      sender TEXT,
+      sender_name TEXT,
+      content TEXT,
+      timestamp TEXT,
+      is_from_me INTEGER,
+      channel TEXT,
+      is_group INTEGER,
+      chat_name TEXT,
+      PRIMARY KEY (id, chat_jid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_all_messages_chat_time ON all_messages(chat_jid, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_all_messages_time ON all_messages(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_all_messages_content ON all_messages(content);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -346,6 +364,167 @@ export function storeMessageDirect(msg: {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
   );
+}
+
+/**
+ * Store an observed message from a user-linked observer instance.
+ * Also called for registered-chat messages from the sending instances so the
+ * audit log is complete. INSERT OR IGNORE handles dedup on (id, chat_jid).
+ */
+export function storeObservedMessage(msg: ObservedMessage): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO all_messages
+       (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, channel, is_group, chat_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    msg.id,
+    msg.chat_jid,
+    msg.sender,
+    msg.sender_name,
+    msg.content,
+    msg.timestamp,
+    msg.is_from_me ? 1 : 0,
+    msg.channel,
+    msg.is_group ? 1 : 0,
+    msg.chat_name ?? null,
+  );
+}
+
+export interface ObservedQueryOptions {
+  query?: string;
+  chatJid?: string;
+  channel?: 'signal' | 'whatsapp';
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+function toObserved(row: Record<string, unknown>): ObservedMessage {
+  return {
+    id: row.id as string,
+    chat_jid: row.chat_jid as string,
+    sender: row.sender as string,
+    sender_name: row.sender_name as string,
+    content: row.content as string,
+    timestamp: row.timestamp as string,
+    is_from_me: row.is_from_me === 1,
+    channel: row.channel as 'signal' | 'whatsapp',
+    is_group: row.is_group === 1,
+    chat_name: (row.chat_name as string | null) ?? undefined,
+  };
+}
+
+export function searchObservedMessages(
+  opts: ObservedQueryOptions,
+): ObservedMessage[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (opts.query) {
+    clauses.push('content LIKE ?');
+    params.push(`%${opts.query}%`);
+  }
+  if (opts.chatJid) {
+    clauses.push('chat_jid = ?');
+    params.push(opts.chatJid);
+  }
+  if (opts.channel) {
+    clauses.push('channel = ?');
+    params.push(opts.channel);
+  }
+  if (opts.since) {
+    clauses.push('timestamp >= ?');
+    params.push(opts.since);
+  }
+  if (opts.until) {
+    clauses.push('timestamp <= ?');
+    params.push(opts.until);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const rows = db
+    .prepare(
+      `SELECT * FROM all_messages ${where} ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(...params, limit) as Record<string, unknown>[];
+  return rows.map(toObserved);
+}
+
+export function getObservedChatHistory(
+  chatJid: string,
+  opts: { before?: string; after?: string; limit?: number } = {},
+): ObservedMessage[] {
+  const clauses = ['chat_jid = ?'];
+  const params: unknown[] = [chatJid];
+  if (opts.before) {
+    clauses.push('timestamp < ?');
+    params.push(opts.before);
+  }
+  if (opts.after) {
+    clauses.push('timestamp > ?');
+    params.push(opts.after);
+  }
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const rows = db
+    .prepare(
+      `SELECT * FROM all_messages WHERE ${clauses.join(' AND ')} ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(...params, limit) as Record<string, unknown>[];
+  return rows.map(toObserved);
+}
+
+export interface ObservedChatSummary {
+  chat_jid: string;
+  chat_name: string | null;
+  channel: string;
+  is_group: boolean;
+  last_timestamp: string;
+  last_content: string;
+  last_sender_name: string;
+}
+
+export function listObservedChats(opts: {
+  channel?: 'signal' | 'whatsapp';
+  isGroup?: boolean;
+  limit?: number;
+}): ObservedChatSummary[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (opts.channel) {
+    clauses.push('channel = ?');
+    params.push(opts.channel);
+  }
+  if (opts.isGroup !== undefined) {
+    clauses.push('is_group = ?');
+    params.push(opts.isGroup ? 1 : 0);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const rows = db
+    .prepare(
+      `SELECT chat_jid, chat_name, channel, is_group,
+              MAX(timestamp) AS last_timestamp,
+              (SELECT content FROM all_messages m2
+                 WHERE m2.chat_jid = m1.chat_jid
+                 ORDER BY timestamp DESC LIMIT 1) AS last_content,
+              (SELECT sender_name FROM all_messages m2
+                 WHERE m2.chat_jid = m1.chat_jid
+                 ORDER BY timestamp DESC LIMIT 1) AS last_sender_name
+         FROM all_messages m1
+         ${where}
+         GROUP BY chat_jid
+         ORDER BY last_timestamp DESC
+         LIMIT ?`,
+    )
+    .all(...params, limit) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    chat_jid: r.chat_jid as string,
+    chat_name: (r.chat_name as string | null) ?? null,
+    channel: r.channel as string,
+    is_group: r.is_group === 1,
+    last_timestamp: r.last_timestamp as string,
+    last_content: r.last_content as string,
+    last_sender_name: r.last_sender_name as string,
+  }));
 }
 
 export function getNewMessages(

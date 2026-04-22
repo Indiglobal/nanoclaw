@@ -10,6 +10,13 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
   'TZ',
+  'SIGNAL_OBSERVER_ENABLED',
+  'SIGNAL_OBSERVER_ACCOUNT',
+  'SIGNAL_OBSERVER_DATA_DIR',
+  'SIGNAL_OBSERVER_HOST',
+  'SIGNAL_OBSERVER_PORT',
+  'WHATSAPP_OBSERVER_ENABLED',
+  'WHATSAPP_OBSERVER_AUTH_DIR',
 ]);
 
 export const ASSISTANT_NAME =
@@ -94,3 +101,37 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// --- Observer config (user-linked read-only message capture) ---
+
+function boolEnv(val: string | undefined): boolean {
+  return val === 'true';
+}
+
+export const SIGNAL_OBSERVER_ENABLED = boolEnv(
+  process.env.SIGNAL_OBSERVER_ENABLED || envConfig.SIGNAL_OBSERVER_ENABLED,
+);
+export const SIGNAL_OBSERVER_ACCOUNT =
+  process.env.SIGNAL_OBSERVER_ACCOUNT ||
+  envConfig.SIGNAL_OBSERVER_ACCOUNT ||
+  '';
+export const SIGNAL_OBSERVER_DATA_DIR =
+  process.env.SIGNAL_OBSERVER_DATA_DIR ||
+  envConfig.SIGNAL_OBSERVER_DATA_DIR ||
+  path.join(HOME_DIR, '.local', 'share', 'signal-cli-observer');
+export const SIGNAL_OBSERVER_HOST =
+  process.env.SIGNAL_OBSERVER_HOST ||
+  envConfig.SIGNAL_OBSERVER_HOST ||
+  '127.0.0.1';
+export const SIGNAL_OBSERVER_PORT = parseInt(
+  process.env.SIGNAL_OBSERVER_PORT || envConfig.SIGNAL_OBSERVER_PORT || '8079',
+  10,
+);
+
+export const WHATSAPP_OBSERVER_ENABLED = boolEnv(
+  process.env.WHATSAPP_OBSERVER_ENABLED || envConfig.WHATSAPP_OBSERVER_ENABLED,
+);
+export const WHATSAPP_OBSERVER_AUTH_DIR =
+  process.env.WHATSAPP_OBSERVER_AUTH_DIR ||
+  envConfig.WHATSAPP_OBSERVER_AUTH_DIR ||
+  path.resolve(PROJECT_ROOT, 'store', 'observer-wa-auth');

@@ -43,19 +43,21 @@ const MAX_IMAGES_PER_MESSAGE = 5;
 // Signal CLI daemon management
 // ---------------------------------------------------------------------------
 
-interface DaemonHandle {
+export interface DaemonHandle {
   stop: () => void;
   exited: Promise<void>;
   isExited: () => boolean;
 }
 
-function spawnSignalDaemon(
+export function spawnSignalDaemon(
   cliPath: string,
   account: string,
   host: string,
   port: number,
+  configDir?: string,
 ): DaemonHandle {
   const args: string[] = [];
+  if (configDir) args.push('--config', configDir);
   if (account) args.push('-a', account);
   args.push('daemon', '--http', `${host}:${port}`, '--no-receive-stdout');
   args.push('--receive-mode', 'on-start');
@@ -146,7 +148,7 @@ async function signalRpc<T = unknown>(
   }
 }
 
-async function signalCheck(baseUrl: string): Promise<boolean> {
+export async function signalCheck(baseUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/api/v1/check`, {
       signal: AbortSignal.timeout(5000),
@@ -161,12 +163,12 @@ async function signalCheck(baseUrl: string): Promise<boolean> {
 // SSE client for inbound events
 // ---------------------------------------------------------------------------
 
-interface SseEvent {
+export interface SseEvent {
   event?: string;
   data?: string;
 }
 
-async function streamSse(
+export async function streamSse(
   url: string,
   onEvent: (event: SseEvent) => void,
   abortSignal?: AbortSignal,
@@ -270,7 +272,7 @@ interface SignalQuote {
   text?: string;
 }
 
-interface SignalDataMessage {
+export interface SignalDataMessage {
   timestamp?: number;
   message?: string;
   groupInfo?: { groupId?: string; groupName?: string; type?: string };
@@ -283,7 +285,7 @@ interface SignalDataMessage {
   }>;
 }
 
-interface SignalEnvelope {
+export interface SignalEnvelope {
   source?: string;
   sourceName?: string;
   sourceNumber?: string;
@@ -406,7 +408,7 @@ export interface SignalChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-const JID_PREFIX = 'signal:';
+export const JID_PREFIX = 'signal:';
 
 export class SignalChannel implements Channel {
   name = 'signal';
@@ -890,7 +892,7 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -964,7 +966,7 @@ function parseSignalStyles(input: string): StyledText {
   return { text, textStyles: styles };
 }
 
-function computeBackoff(attempt: number): number {
+export function computeBackoff(attempt: number): number {
   const base = Math.min(1000 * Math.pow(2, attempt - 1), 10_000);
   const jitter = base * 0.2 * (Math.random() - 0.5);
   return Math.max(500, base + jitter);

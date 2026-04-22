@@ -12,7 +12,14 @@ import {
   MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
+  SIGNAL_OBSERVER_ACCOUNT,
+  SIGNAL_OBSERVER_DATA_DIR,
+  SIGNAL_OBSERVER_ENABLED,
+  SIGNAL_OBSERVER_HOST,
+  SIGNAL_OBSERVER_PORT,
   TIMEZONE,
+  WHATSAPP_OBSERVER_AUTH_DIR,
+  WHATSAPP_OBSERVER_ENABLED,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -45,7 +52,10 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  storeObservedMessage,
 } from './db.js';
+import { SignalObserver } from './channels/signal-observer.js';
+import { WhatsAppObserver } from './channels/whatsapp-observer.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -613,11 +623,15 @@ async function main(): Promise<void> {
 
   const degradedSubsystems: Array<{ name: string; reason: string }> = [];
 
+  // Hoisted so shutdown handler can reach it before observer init block runs.
+  const observers: Array<{ disconnect: () => Promise<void> }> = [];
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    for (const obs of observers) await obs.disconnect();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -665,6 +679,40 @@ async function main(): Promise<void> {
     }
   }
 
+  // Derive an ObservedMessage from a NewMessage when the JID belongs to a
+  // Signal or WhatsApp chat. Returns null for other channels (Gmail, Telegram,
+  // Slack, Discord) — those aren't captured in the audit log.
+  function deriveObservedFromNewMessage(
+    msg: NewMessage,
+  ): import('./types.js').ObservedMessage | null {
+    const jid = msg.chat_jid;
+    let channel: 'signal' | 'whatsapp';
+    let isGroup: boolean;
+    if (jid.startsWith('signal:')) {
+      channel = 'signal';
+      isGroup = jid.startsWith('signal:group:');
+    } else if (jid.endsWith('@g.us')) {
+      channel = 'whatsapp';
+      isGroup = true;
+    } else if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid')) {
+      channel = 'whatsapp';
+      isGroup = false;
+    } else {
+      return null;
+    }
+    return {
+      id: msg.id,
+      chat_jid: jid,
+      sender: msg.sender,
+      sender_name: msg.sender_name,
+      content: msg.content,
+      timestamp: msg.timestamp,
+      is_from_me: !!msg.is_from_me,
+      channel,
+      is_group: isGroup,
+    };
+  }
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
@@ -694,6 +742,10 @@ async function main(): Promise<void> {
         }
       }
       storeMessage(msg);
+      // Also capture in the audit log so the main agent can query across all
+      // observed chats. Dedup handled by INSERT OR IGNORE on (id, chat_jid).
+      const observed = deriveObservedFromNewMessage(msg);
+      if (observed) storeObservedMessage(observed);
     },
     onChatMetadata: (
       chatJid: string,
@@ -746,6 +798,39 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Bring up user-linked observer instances (read-only audit log feeders).
+  if (SIGNAL_OBSERVER_ENABLED) {
+    const obs = new SignalObserver({
+      account: SIGNAL_OBSERVER_ACCOUNT,
+      dataDir: SIGNAL_OBSERVER_DATA_DIR,
+      host: SIGNAL_OBSERVER_HOST,
+      port: SIGNAL_OBSERVER_PORT,
+      onObservedMessage: (m) => storeObservedMessage(m),
+      onChatMetadata: (chatJid, timestamp, name, channel, isGroup) =>
+        storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    });
+    try {
+      await obs.connect();
+      observers.push(obs);
+    } catch (err) {
+      logger.error({ err }, 'SignalObserver failed to start');
+    }
+  }
+  if (WHATSAPP_OBSERVER_ENABLED) {
+    const obs = new WhatsAppObserver({
+      authDir: WHATSAPP_OBSERVER_AUTH_DIR,
+      onObservedMessage: (m) => storeObservedMessage(m),
+      onChatMetadata: (chatJid, timestamp, name, channel, isGroup) =>
+        storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    });
+    try {
+      await obs.connect();
+      observers.push(obs);
+    } catch (err) {
+      logger.error({ err }, 'WhatsAppObserver failed to start');
+    }
   }
 
   // Notify the main group if any subsystems are degraded (failed channels or
