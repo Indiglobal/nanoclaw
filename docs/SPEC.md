@@ -286,7 +286,13 @@ nanoclaw/
 │   │       ├── index.ts           # Entry point (query loop, IPC polling, session resume)
 │   │       └── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
 │   └── skills/
-│       └── agent-browser.md       # Browser automation skill
+│       ├── agent-browser/SKILL.md # Browser automation
+│       ├── capabilities/SKILL.md  # Inventory of installed skills & tools
+│       ├── status/SKILL.md        # Quick health check
+│       ├── slack-formatting/SKILL.md # Slack marker rewriting
+│       └── message-history/       # Query observed Signal/WA chats (main-only)
+│           ├── SKILL.md
+│           └── search.js          # search | show | list subcommands
 │
 ├── dist/                          # Compiled JavaScript (gitignored)
 │
@@ -314,7 +320,7 @@ nanoclaw/
 │
 ├── store/                         # Local data (gitignored)
 │   ├── auth/                      # WhatsApp authentication state
-│   └── messages.db                # SQLite database (messages, chats, scheduled_tasks, task_run_logs, registered_groups, sessions, router_state)
+│   └── messages.db                # SQLite database (messages, all_messages [observer audit log], chats, scheduled_tasks, task_run_logs, registered_groups, sessions, router_state)
 │
 ├── data/                          # Application state (gitignored)
 │   ├── sessions/                  # Per-group session data (.claude/ dirs with JSONL transcripts)
@@ -567,6 +573,15 @@ When a triggered message arrives, the agent receives all messages since its last
 ```
 
 This allows the agent to understand the conversation context even if it wasn't mentioned in every message.
+
+### Observer Pattern (Signal & WhatsApp)
+
+Alongside the agent's own sending instances, NanoClaw can run **read-only observer daemons** linked as secondary devices on the *user's* own Signal / WhatsApp accounts. Observers never send; they only capture every event the user's primary device would see and persist it to the `all_messages` audit table.
+
+- Signal: `npm run link-signal-observer` pairs a new `signal-cli` instance to the user's account (same mechanism as Signal Desktop). Set `SIGNAL_OBSERVER_ENABLED=true`.
+- WhatsApp: same pattern via Baileys linked-device pairing (`npm run link-wa-observer`). In the default config NanoClaw already runs on the user's WhatsApp account, so the observer class is available but typically unused.
+- Access: the **`message-history` container skill** (main channel only) queries the `all_messages` table with `search | show | list` subcommands. Non-main containers have neither the skill nor the store mount, so they can't query historical chats.
+- Scope: forward-only from observer-link time. No historical backfill. No attachment capture on the observer path (text + captions only).
 
 ---
 

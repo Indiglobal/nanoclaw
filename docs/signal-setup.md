@@ -154,6 +154,39 @@ Set `SIGNAL_ATTACHMENTS_DIR` in `.env` to override the default download director
 
 Files must live under `/workspace/group/` inside the container (i.e. anywhere in the group folder on the host). A common convention is `/workspace/group/outbox/`. Validation is synchronous — bad paths, files over 100MB, or missing files return an error immediately. Delivery is async; if signal-cli later fails, the host posts a `<system-notice type="send_failed" reason="...">` into the agent's next turn and the agent corrects itself to the user. No config needed — signal-cli runs as the NanoClaw user and reads the paths directly, no base64 round-trip.
 
+## Observer Mode — Reading All Your Signal Chats
+
+In addition to the agent's own Signal number, you can link a **read-only observer daemon** to your *personal* Signal account. The observer captures every message your phone would see — DMs, groups, the lot — into an audit table the main agent can search via the `message-history` skill. It never sends.
+
+This is the same mechanism Signal Desktop uses: a linked secondary device.
+
+1. Start the pairing helper:
+
+   ```bash
+   npm run link-signal-observer
+   ```
+
+   It prints a `sgnl://...` URI (and a QR code). On your phone, open Signal → Settings → Linked devices → Link new device, then scan or paste the URI. Name it "NanoClaw Observer" so you can revoke it later if needed.
+
+2. Enable the observer in `.env`:
+
+   ```env
+   SIGNAL_OBSERVER_ENABLED=true
+   SIGNAL_OBSERVER_ACCOUNT=+1YOURNUMBER
+   SIGNAL_OBSERVER_DATA_DIR=~/.local/share/signal-cli-observer
+   SIGNAL_OBSERVER_HOST=127.0.0.1
+   SIGNAL_OBSERVER_PORT=8079
+   ```
+
+3. Restart NanoClaw. The observer connects, starts streaming, and every new Signal message you send or receive is persisted to the `all_messages` table. The main agent queries it with `message-history search|show|list`.
+
+**Scope & privacy**
+
+- Forward-only. Nothing before the observer was linked is captured.
+- Main channel only. Other groups' containers cannot read the audit store.
+- Text + captions only. Attachments aren't downloaded on the observer path in v1.
+- To disable: set `SIGNAL_OBSERVER_ENABLED=false` and restart, or revoke the linked device from your phone (Settings → Linked devices).
+
 ## Running as a Service User
 
 If NanoClaw runs as a dedicated user (e.g., `nanoclaw`) and you want the agent to access another user's files via bind mounts:
