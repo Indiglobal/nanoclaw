@@ -13,6 +13,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import qrcodeTerminal from 'qrcode-terminal';
+
 import { readEnvFile } from '../src/env.js';
 
 function main(): void {
@@ -43,8 +45,24 @@ function main(): void {
   const child = spawn(
     cliPath,
     ['--config', dataDir, 'link', '-n', 'NanoClaw Observer'],
-    { stdio: 'inherit' },
+    { stdio: ['inherit', 'pipe', 'inherit'] },
   );
+
+  let uriRendered = false;
+  child.stdout.on('data', (chunk: Buffer) => {
+    const text = chunk.toString();
+    process.stdout.write(text);
+    if (!uriRendered) {
+      const match = text.match(/sgnl:\/\/linkdevice\?[^\s]+/);
+      if (match) {
+        uriRendered = true;
+        console.log('\nScan this QR from your phone camera:');
+        qrcodeTerminal.generate(match[0], { small: true });
+        console.log('(If the QR is garbled, resize your terminal wider.)\n');
+      }
+    }
+  });
+
   child.on('exit', (code) => {
     if (code === 0) {
       console.log(
