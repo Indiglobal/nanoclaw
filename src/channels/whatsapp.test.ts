@@ -405,6 +405,93 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).not.toHaveBeenCalled();
     });
 
+    it('fires onObservedMessage for unregistered chats so the audit log captures them', async () => {
+      const onObservedMessage = vi.fn();
+      const opts = createTestOpts({ onObservedMessage });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'obs-msg-1',
+            remoteJid: 'unregistered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            conversation: 'whispering in a group the agent is not in',
+          },
+          pushName: 'Bob',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(onObservedMessage).toHaveBeenCalledTimes(1);
+      expect(onObservedMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'obs-msg-1',
+          chat_jid: 'unregistered@g.us',
+          content: 'whispering in a group the agent is not in',
+          channel: 'whatsapp',
+          is_group: true,
+          is_from_me: false,
+          sender_name: 'Bob',
+        }),
+      );
+    });
+
+    it('fires onObservedMessage for registered chats too (dedup is the DB layer job)', async () => {
+      const onObservedMessage = vi.fn();
+      const opts = createTestOpts({ onObservedMessage });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'obs-msg-2',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: { conversation: 'hi in a registered group' },
+          pushName: 'Bob',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledTimes(1);
+      expect(onObservedMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire onObservedMessage for protocol messages with no text', async () => {
+      const onObservedMessage = vi.fn();
+      const opts = createTestOpts({ onObservedMessage });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'obs-msg-3',
+            remoteJid: 'unregistered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: { senderKeyDistributionMessage: {} }, // protocol noise, no text
+          pushName: 'Bob',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(onObservedMessage).not.toHaveBeenCalled();
+    });
+
     it('ignores status@broadcast messages', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);

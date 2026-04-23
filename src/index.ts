@@ -754,6 +754,11 @@ async function main(): Promise<void> {
       channel?: string,
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    // Channels that want the audit log on unregistered chats (currently
+    // WhatsApp — its existing instance already runs on the user's account,
+    // so no separate observer daemon is needed) can forward messages here.
+    onObservedMessage: (m: import('./types.js').ObservedMessage) =>
+      storeObservedMessage(m),
     registeredGroups: () => registeredGroups,
   };
 

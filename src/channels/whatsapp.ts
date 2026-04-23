@@ -43,6 +43,7 @@ import {
   Channel,
   OnInboundMessage,
   OnChatMetadata,
+  OnObservedMessage,
   RegisteredGroup,
 } from '../types.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -52,6 +53,13 @@ const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
+  /**
+   * Called for every inbound WhatsApp message — registered or not — so the
+   * audit log (`all_messages`) covers chats the agent isn't routed into.
+   * The existing Baileys connection already sees these; this hook surfaces
+   * them without the registration gate that `onMessage` applies.
+   */
+  onObservedMessage?: OnObservedMessage;
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
@@ -283,27 +291,51 @@ export class WhatsAppChannel implements Channel {
             isGroup,
           );
 
+          // Audit-log capture — fires for EVERY chat this account sees, not
+          // just registered ones, so the main agent can query unregistered
+          // chats via message-history. Derive content/sender once and
+          // reuse below for the registered-group path.
+          const content =
+            normalized.conversation ||
+            normalized.extendedTextMessage?.text ||
+            normalized.imageMessage?.caption ||
+            normalized.videoMessage?.caption ||
+            '';
+          if (this.opts.onObservedMessage && content) {
+            const obsSender = msg.key.participant || msg.key.remoteJid || '';
+            const obsSenderName = msg.pushName || obsSender.split('@')[0];
+            this.opts.onObservedMessage({
+              id: msg.key.id || '',
+              chat_jid: chatJid,
+              sender: obsSender,
+              sender_name: obsSenderName,
+              content,
+              timestamp,
+              is_from_me: msg.key.fromMe || false,
+              channel: 'whatsapp',
+              is_group: isGroup,
+            });
+          }
+
           // Only deliver full message for registered groups
           const groups = this.opts.registeredGroups();
           if (groups[chatJid]) {
-            let content =
-              normalized.conversation ||
-              normalized.extendedTextMessage?.text ||
-              normalized.imageMessage?.caption ||
-              normalized.videoMessage?.caption ||
-              '';
+            let deliverContent = content;
 
             // WhatsApp group mentions use the LID in raw text (e.g. "@80355281346633")
             // instead of the display name. Normalize to @AssistantName for trigger matching.
-            if (this.botLidUser && content.includes(`@${this.botLidUser}`)) {
-              content = content.replace(
+            if (
+              this.botLidUser &&
+              deliverContent.includes(`@${this.botLidUser}`)
+            ) {
+              deliverContent = deliverContent.replace(
                 `@${this.botLidUser}`,
                 `@${ASSISTANT_NAME}`,
               );
             }
 
             // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-            if (!content) continue;
+            if (!deliverContent) continue;
 
             const sender = msg.key.participant || msg.key.remoteJid || '';
             const senderName = msg.pushName || sender.split('@')[0];
@@ -315,14 +347,14 @@ export class WhatsAppChannel implements Channel {
             // (even in DMs/self-chat) so we check for that.
             const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
               ? fromMe
-              : content.startsWith(`${ASSISTANT_NAME}:`);
+              : deliverContent.startsWith(`${ASSISTANT_NAME}:`);
 
             this.opts.onMessage(chatJid, {
               id: msg.key.id || '',
               chat_jid: chatJid,
               sender,
               sender_name: senderName,
-              content,
+              content: deliverContent,
               timestamp,
               is_from_me: fromMe,
               is_bot_message: isBotMessage,
