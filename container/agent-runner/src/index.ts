@@ -516,6 +516,31 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Optional Home Assistant MCP server: mounted credentials at /home/node/.homeassistant-mcp
+  // Files: `url` (e.g. http://host.docker.internal:8123) and `token` (Long-Lived Access Token)
+  let homeassistantServer:
+    | { command: string; args: string[] }
+    | undefined;
+  const haDir = '/home/node/.homeassistant-mcp';
+  const haUrlFile = path.join(haDir, 'url');
+  const haTokenFile = path.join(haDir, 'token');
+  if (fs.existsSync(haUrlFile) && fs.existsSync(haTokenFile)) {
+    const haUrl = fs.readFileSync(haUrlFile, 'utf8').trim().replace(/\/$/, '');
+    const haToken = fs.readFileSync(haTokenFile, 'utf8').trim();
+    if (haUrl && haToken) {
+      homeassistantServer = {
+        command: 'npx',
+        args: [
+          '-y',
+          'mcp-remote',
+          `${haUrl}/mcp_server/sse`,
+          '--header',
+          `Authorization: Bearer ${haToken}`,
+        ],
+      };
+    }
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -552,6 +577,7 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
         'mcp__google_tasks__*',
+        'mcp__homeassistant__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -575,6 +601,7 @@ async function runQuery(
           command: 'node',
           args: [path.join(__dirname, 'google-tasks-mcp-stdio.js')],
         },
+        ...(homeassistantServer ? { homeassistant: homeassistantServer } : {}),
       },
       hooks: {
         PreCompact: [

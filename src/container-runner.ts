@@ -252,6 +252,17 @@ function buildVolumeMounts(
     });
   }
 
+  // Home Assistant credentials directory (for HA MCP via mcp-remote inside the container)
+  // Expected files: `url` (HA base URL) and `token` (Long-Lived Access Token)
+  const haDir = path.join(homeDir, '.homeassistant-mcp');
+  if (fs.existsSync(haDir)) {
+    mounts.push({
+      hostPath: haDir,
+      containerPath: '/home/node/.homeassistant-mcp',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
