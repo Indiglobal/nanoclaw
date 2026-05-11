@@ -666,9 +666,7 @@ export function createSignalAdapter(config: {
     // detect bot mentions via Signal's mentions array (UUID match against
     // the bot's own account number/UUID).
     const botMentioned = isGroup
-      ? (dataMessage.mentions ?? []).some(
-          (m) => m.uuid === config.account || m.number === config.account,
-        )
+      ? (dataMessage.mentions ?? []).some((m) => m.uuid === config.account || m.number === config.account)
       : true;
 
     const msg: InboundMessage = {
